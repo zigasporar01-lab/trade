@@ -57,7 +57,11 @@ class MemeBot:
     # ------------------------------------------------------------------
     def discover_candidates(self, query_terms: list[str]):
         cfg = self.settings.discovery
-        markets = self.dexscreener.get_new_pairs(chain_id=self.settings.trading.chain, query_terms=query_terms)
+        try:
+            markets = self.dexscreener.get_new_pairs(chain_id=self.settings.trading.chain, query_terms=query_terms)
+        except Exception as exc:  # noqa: BLE001 - a failed discovery pass must not crash the bot
+            log.warning("bot.discovery_failed", error=str(exc))
+            return []
         candidates = []
         for m in markets:
             if m.liquidity_usd < cfg.min_liquidity_usd:
@@ -102,12 +106,17 @@ class MemeBot:
             return
 
         network = GECKOTERMINAL_NETWORK.get(self.settings.trading.chain, self.settings.trading.chain)
-        candles = self.geckoterminal.get_ohlcv(
-            network=network,
-            pool_address=market.pair_address,
-            aggregate_hours=self.settings.strategy.ohlcv_aggregate_hours,
-            limit=self.settings.strategy.candles_lookback,
-        )
+        try:
+            candles = self.geckoterminal.get_ohlcv(
+                network=network,
+                pool_address=market.pair_address,
+                aggregate_hours=self.settings.strategy.ohlcv_aggregate_hours,
+                limit=self.settings.strategy.candles_lookback,
+            )
+        except Exception as exc:  # noqa: BLE001 - a candle-fetch failure skips this candidate, never crashes the bot
+            log.warning("bot.candle_fetch_failed", token=market.token_address, error=str(exc))
+            return
+
         signal = generate_entry_signal(candles, self.settings.strategy, self.settings.exits)
         if not signal.should_enter:
             log.info("bot.no_signal", token=market.token_address, symbol=market.symbol, reasons=signal.reasons)
@@ -157,7 +166,11 @@ class MemeBot:
     def monitor_positions(self) -> None:
         cfg = self.settings.exits
         for token_address, position in list(self.portfolio.open_positions.items()):
-            pairs = self.dexscreener.get_token_pairs(self.settings.trading.chain, token_address)
+            try:
+                pairs = self.dexscreener.get_token_pairs(self.settings.trading.chain, token_address)
+            except Exception as exc:  # noqa: BLE001 - a stale price read must never crash position monitoring
+                log.warning("bot.price_lookup_error", token=token_address, error=str(exc))
+                continue
             if not pairs:
                 log.warning("bot.price_lookup_failed", token=token_address)
                 continue
@@ -209,16 +222,23 @@ class MemeBot:
         )
 
         while True:
-            now = datetime.utcnow()
+            try:
+                now = datetime.utcnow()
 
-            if (now - last_discovery).total_seconds() >= loop_cfg.discovery_interval_minutes * 60:
-                for market in self.discover_candidates(query_terms):
-                    self.evaluate_candidate(market)
-                last_discovery = now
+                if (now - last_discovery).total_seconds() >= loop_cfg.discovery_interval_minutes * 60:
+                    for market in self.discover_candidates(query_terms):
+                        self.evaluate_candidate(market)
+                    last_discovery = now
 
-            self.monitor_positions()
+                self.monitor_positions()
 
-            log.info("bot.heartbeat", **self.portfolio.summary())
+                log.info("bot.heartbeat", **self.portfolio.summary())
+            except Exception as exc:  # noqa: BLE001
+                # Last-resort safety net: an open position with a live stop-loss
+                # must keep being watched even if something unanticipated breaks
+                # discovery. Log it loudly and keep looping rather than exit.
+                log.error("bot.loop_iteration_failed", error=str(exc))
+
             time.sleep(loop_cfg.position_monitor_interval_minutes * 60)
 
     def close(self) -> None:

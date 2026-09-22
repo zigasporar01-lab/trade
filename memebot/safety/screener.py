@@ -14,6 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+import structlog
+
 from memebot.config import Settings
 from memebot.data.dexscreener import DexScreenerClient
 from memebot.data.goplus import GoPlusClient
@@ -24,6 +26,8 @@ from memebot.data.twitter import TwitterClient
 from memebot.models import SafetyResult, SocialResult, Verdict
 from memebot.safety.onchain import evaluate_onchain_safety, merge_reports
 from memebot.safety.social import build_social_report, evaluate_social_safety
+
+log = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -67,16 +71,36 @@ class SafetyScreener:
         self._history: dict[str, CandidateHistory] = {}
 
     def scan(self, token_address: str, symbol: str) -> ScanRecord:
-        rc_raw = self.rugcheck.get_report(token_address)
-        gp_raw = self.goplus.get_token_security(token_address)
+        # Every external call here is network I/O against a third-party API we
+        # don't control. A single failed/rate-limited/misconfigured call must
+        # never crash the bot — it must instead be treated as missing data,
+        # which the safety scoring logic (see safety/onchain.py, safety/social.py)
+        # already refuses to treat as "safe". Fail closed, never fail loud.
+        try:
+            rc_raw = self.rugcheck.get_report(token_address)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("screener.rugcheck_failed", token=token_address, error=str(exc))
+            rc_raw = None
+
+        try:
+            gp_raw = self.goplus.get_token_security(token_address)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("screener.goplus_failed", token=token_address, error=str(exc))
+            gp_raw = None
+
         merged = merge_reports(rugcheck_fields(rc_raw), goplus_fields(gp_raw), token_address)
         onchain_result = evaluate_onchain_safety(merged, self.settings.safety)
 
-        mentions = self.twitter.search_token_mentions(
-            symbol=symbol,
-            token_address=token_address,
-            max_reads=self.settings.social.max_reads_per_token_scan,
-        )
+        try:
+            mentions = self.twitter.search_token_mentions(
+                symbol=symbol,
+                token_address=token_address,
+                max_reads=self.settings.social.max_reads_per_token_scan,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("screener.twitter_failed", token=token_address, error=str(exc))
+            mentions = []
+
         social_report = build_social_report(token_address, mentions, self.settings.social)
         social_result = evaluate_social_safety(social_report, self.settings.social)
 

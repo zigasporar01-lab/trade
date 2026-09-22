@@ -1,0 +1,230 @@
+"""Main orchestration loop:
+
+  discover -> on-chain+social safety gate (2-scan reconfirmation) ->
+  4h technical signal -> risk-managed position sizing -> execute ->
+  monitor open positions for stop/target/time exits.
+
+Every stage can say no. The bot only ever acts on a token that survives
+every single stage.
+"""
+
+from __future__ import annotations
+
+import time
+from datetime import datetime, timedelta
+
+import structlog
+
+from memebot.config import Settings
+from memebot.data.dexscreener import DexScreenerClient
+from memebot.data.geckoterminal import GeckoTerminalClient
+from memebot.execution.broker import Broker
+from memebot.execution.jupiter_client import JupiterClient
+from memebot.execution.live_broker import LiveBroker
+from memebot.execution.paper_broker import PaperBroker
+from memebot.models import Position
+from memebot.risk.position_sizing import size_position
+from memebot.risk.risk_manager import RiskManager
+from memebot.safety.screener import SafetyScreener
+from memebot.strategy.signals import generate_entry_signal
+from memebot.core.portfolio import Portfolio
+
+log = structlog.get_logger(__name__)
+
+GECKOTERMINAL_NETWORK = {"solana": "solana"}
+
+
+class MemeBot:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.dexscreener = DexScreenerClient()
+        self.geckoterminal = GeckoTerminalClient()
+        self.screener = SafetyScreener(settings)
+        self.jupiter = JupiterClient(base_url=settings.jupiter_base_url, api_key=settings.jupiter_api_key)
+        self.broker: Broker = LiveBroker(settings, self.jupiter) if settings.is_live else PaperBroker(self.jupiter)
+        self.portfolio = Portfolio()
+        self.risk_manager = RiskManager(settings.trading, settings.trading.capital_sol)
+
+        log.info(
+            "bot.initialized",
+            mode=settings.trading.mode,
+            chain=settings.trading.chain,
+            capital_sol=settings.trading.capital_sol,
+        )
+
+    # ------------------------------------------------------------------
+    # Discovery + safety + signal + entry
+    # ------------------------------------------------------------------
+    def discover_candidates(self, query_terms: list[str]):
+        cfg = self.settings.discovery
+        markets = self.dexscreener.get_new_pairs(chain_id=self.settings.trading.chain, query_terms=query_terms)
+        candidates = []
+        for m in markets:
+            if m.liquidity_usd < cfg.min_liquidity_usd:
+                continue
+            if m.volume_24h_usd < cfg.min_24h_volume_usd:
+                continue
+            age = m.age_minutes
+            if age is None or age < cfg.min_token_age_minutes:
+                continue
+            if age > cfg.max_token_age_hours * 60:
+                continue
+            candidates.append(m)
+        log.info("bot.discovery", found=len(markets), passed_filters=len(candidates))
+        return candidates
+
+    def evaluate_candidate(self, market) -> None:
+        if self.portfolio.has_open_position(market.token_address):
+            return
+
+        record = self.screener.scan(market.token_address, market.symbol)
+        if not record.passed:
+            log.info(
+                "bot.candidate_rejected",
+                token=market.token_address,
+                symbol=market.symbol,
+                onchain_verdict=record.onchain.verdict,
+                onchain_reasons=record.onchain.reasons,
+                social_verdict=record.social.verdict,
+                social_reasons=record.social.reasons,
+            )
+            return
+
+        if not self.screener.is_tradable(market.token_address):
+            log.info(
+                "bot.candidate_awaiting_reconfirmation",
+                token=market.token_address,
+                symbol=market.symbol,
+                scans_so_far=self.screener.scan_count(market.token_address),
+                required=self.settings.discovery.reconfirm_scans_required,
+                gap_minutes=self.settings.discovery.reconfirm_gap_minutes,
+            )
+            return
+
+        network = GECKOTERMINAL_NETWORK.get(self.settings.trading.chain, self.settings.trading.chain)
+        candles = self.geckoterminal.get_ohlcv(
+            network=network,
+            pool_address=market.pair_address,
+            aggregate_hours=self.settings.strategy.ohlcv_aggregate_hours,
+            limit=self.settings.strategy.candles_lookback,
+        )
+        signal = generate_entry_signal(candles, self.settings.strategy, self.settings.exits)
+        if not signal.should_enter:
+            log.info("bot.no_signal", token=market.token_address, symbol=market.symbol, reasons=signal.reasons)
+            return
+
+        can_open, reason = self.risk_manager.can_open_new_position(self.portfolio.open_count)
+        if not can_open:
+            log.info("bot.entry_blocked_by_risk_manager", token=market.token_address, reason=reason)
+            return
+
+        sizing = size_position(
+            entry_price=signal.entry_price,
+            stop_loss=signal.stop_loss,
+            capital_sol=self.settings.trading.capital_sol,
+            open_positions_sol=self.portfolio.open_capital_sol,
+            cfg=self.settings.trading,
+        )
+        if sizing.rejected:
+            log.info("bot.sizing_rejected", token=market.token_address, reasons=sizing.reasons)
+            return
+
+        fill = self.broker.buy(market.token_address, sizing.size_sol, self.settings.trading.slippage_bps)
+        if not fill.success:
+            log.warning("bot.buy_failed", token=market.token_address, error=fill.error)
+            return
+
+        entry_price = fill.filled_price or signal.entry_price
+        risk_unit = entry_price - signal.stop_loss
+        position = Position(
+            token_address=market.token_address,
+            symbol=market.symbol,
+            entry_price=entry_price,
+            size_sol=sizing.size_sol,
+            size_tokens=fill.filled_size or 0.0,
+            stop_loss=signal.stop_loss,
+            take_profit=signal.take_profit,
+            risk_unit=risk_unit,
+            opened_at=datetime.utcnow(),
+            max_hold_until=datetime.utcnow() + timedelta(hours=self.settings.exits.max_hold_hours),
+            high_water_mark=entry_price,
+        )
+        self.portfolio.open_position(position)
+
+    # ------------------------------------------------------------------
+    # Exit monitoring
+    # ------------------------------------------------------------------
+    def monitor_positions(self) -> None:
+        cfg = self.settings.exits
+        for token_address, position in list(self.portfolio.open_positions.items()):
+            pairs = self.dexscreener.get_token_pairs(self.settings.trading.chain, token_address)
+            if not pairs:
+                log.warning("bot.price_lookup_failed", token=token_address)
+                continue
+            current_price = pairs[0].price_usd
+
+            reason = None
+            if current_price <= position.stop_loss:
+                reason = "stop_loss"
+            elif current_price >= position.take_profit:
+                reason = "take_profit"
+            elif datetime.utcnow() >= position.max_hold_until:
+                reason = "max_hold_time"
+            else:
+                if current_price > position.high_water_mark:
+                    position.high_water_mark = current_price
+
+                if not position.trailing_active and position.risk_unit > 0:
+                    gained_r = (position.high_water_mark - position.entry_price) / position.risk_unit
+                    if gained_r >= cfg.trailing_stop_activate_rr:
+                        position.trailing_active = True
+                        log.info("bot.trailing_stop_activated", token=token_address, gained_r=gained_r)
+
+                if position.trailing_active:
+                    new_stop = position.high_water_mark - position.risk_unit
+                    if new_stop > position.stop_loss:
+                        position.stop_loss = new_stop
+
+            if reason:
+                fill = self.broker.sell(token_address, position.size_tokens, self.settings.trading.slippage_bps)
+                if not fill.success:
+                    log.error("bot.sell_failed", token=token_address, error=fill.error)
+                    continue
+                close_price = fill.filled_price or current_price
+                closed = self.portfolio.close_position(token_address, close_price, reason)
+                if closed:
+                    self.risk_manager.record_trade_closed(closed.pnl_sol or 0.0)
+
+    # ------------------------------------------------------------------
+    # Loop
+    # ------------------------------------------------------------------
+    def run_forever(self, query_terms: list[str]) -> None:
+        loop_cfg = self.settings.loop
+        last_discovery = datetime.min
+
+        log.warning(
+            "bot.starting",
+            mode=self.settings.trading.mode,
+            warning="LIVE TRADING" if self.settings.is_live else "paper trading (no funds at risk)",
+        )
+
+        while True:
+            now = datetime.utcnow()
+
+            if (now - last_discovery).total_seconds() >= loop_cfg.discovery_interval_minutes * 60:
+                for market in self.discover_candidates(query_terms):
+                    self.evaluate_candidate(market)
+                last_discovery = now
+
+            self.monitor_positions()
+
+            log.info("bot.heartbeat", **self.portfolio.summary())
+            time.sleep(loop_cfg.position_monitor_interval_minutes * 60)
+
+    def close(self) -> None:
+        self.dexscreener.close()
+        self.geckoterminal.close()
+        self.screener.close()
+        self.jupiter.close()
+        if isinstance(self.broker, LiveBroker):
+            self.broker.close()

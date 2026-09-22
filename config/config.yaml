@@ -1,0 +1,93 @@
+# =============================================================================
+# Memebot configuration — conservative defaults.
+# Every threshold here exists because loosening it trades safety for speed.
+# Read README.md before changing anything, especially in the `safety` section.
+# =============================================================================
+
+trading:
+  mode: paper                    # paper | live  (NEVER start on live)
+  chain: solana
+  base_currency: SOL
+  capital_sol: 0.5                # total bankroll the bot is allowed to touch
+  max_concurrent_positions: 2
+  max_position_size_pct: 0.15     # a single trade never uses more than 15% of capital
+  risk_per_trade_pct: 0.01        # classic 1% rule: max loss per trade if stop is hit
+  max_daily_loss_pct: 0.05        # circuit breaker: halt trading for the day at -5%
+  max_consecutive_losses: 3
+  cooldown_minutes_after_loss_streak: 240
+  slippage_bps: 150               # 1.5% — memecoin pools are thin, DexScreener bots front-run tight slippage
+
+# ---------------------------------------------------------------------------
+# Candidate discovery — which tokens are even allowed to enter the pipeline.
+# ---------------------------------------------------------------------------
+discovery:
+  min_liquidity_usd: 15000
+  min_24h_volume_usd: 20000
+  min_token_age_minutes: 60       # skip brand-new launches; the first hour is rug-pull peak hours
+  max_token_age_hours: 168        # skip old, illiquid, already-dead tokens (>7 days)
+  min_holder_count: 100
+  reconfirm_scans_required: 2     # a candidate must pass the safety gate on 2 separate scans...
+  reconfirm_gap_minutes: 15       # ...at least 15 minutes apart, before it's tradable
+
+# ---------------------------------------------------------------------------
+# On-chain safety gate (RugCheck + GoPlus + raw holder data). ALL must pass.
+# ---------------------------------------------------------------------------
+safety:
+  require_mint_authority_renounced: true
+  require_freeze_authority_renounced: true
+  require_lp_locked_or_burned: true
+  min_lp_locked_pct: 90
+  max_top10_holder_pct: 30
+  max_single_holder_pct: 15       # excluding known LP/burn addresses
+  max_buy_tax_pct: 10
+  max_sell_tax_pct: 10
+  reject_on_honeypot_flag: true
+  max_rugcheck_risk_score: 4000   # RugCheck's raw "score" is a RISK score — lower is safer. Tune after seeing real reports.
+  min_goplus_confidence: 0.6
+
+# ---------------------------------------------------------------------------
+# Social/X screen — a token still needs organic-looking attention, not a
+# botted pump, and must not already look like a coordinated rug narrative.
+# ---------------------------------------------------------------------------
+social:
+  enabled: true
+  min_unique_authors_24h: 3
+  min_mentions_24h: 5
+  max_new_account_ratio: 0.6      # if >60% of mentions come from accounts <14 days old, flag as coordinated
+  min_account_age_days: 14
+  max_negative_sentiment_ratio: 0.6
+  cache_ttl_minutes: 20           # X reads cost money — cache aggressively
+  max_reads_per_token_scan: 25
+
+# ---------------------------------------------------------------------------
+# Strategy — 4h timeframe technical signal.
+# ---------------------------------------------------------------------------
+strategy:
+  timeframe: "4h"
+  ohlcv_aggregate_hours: 4
+  candles_lookback: 60
+  ema_fast: 9
+  ema_slow: 21
+  rsi_period: 14
+  rsi_overbought: 75              # widened vs classic 70/30 — memecoins run hotter
+  rsi_oversold: 25
+  bb_period: 20
+  bb_std_dev: 2.0
+  atr_period: 14
+  min_breakout_volume_multiplier: 1.5   # breakout candle volume vs 20-candle average
+
+# ---------------------------------------------------------------------------
+# Exit rules.
+# ---------------------------------------------------------------------------
+exits:
+  stop_loss_atr_multiplier: 1.75
+  take_profit_risk_reward: 2.5
+  max_hold_hours: 8               # force exit if neither SL nor TP hit within ~2x the signal timeframe
+  trailing_stop_activate_rr: 1.5  # once trade is up 1.5R, trail the stop
+
+# ---------------------------------------------------------------------------
+# Loop timing.
+# ---------------------------------------------------------------------------
+loop:
+  discovery_interval_minutes: 15
+  position_monitor_interval_minutes: 5

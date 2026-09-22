@@ -119,13 +119,17 @@ Leave `MODE=paper` — do not touch live-mode settings yet.
 
 | Service | Used for | Free tier? | Get it at |
 |---|---|---|---|
-| RugCheck | On-chain safety reports | Yes (basic) | https://rugcheck.xyz → sign up → API key |
-| GoPlus Security | Second opinion on safety | Yes | https://gopluslabs.io |
+| RugCheck | On-chain safety reports | Yes, **no key needed** — leave `RUGCHECK_API_KEY` blank | n/a |
+| GoPlus Security | Second opinion on safety | Yes | https://console.gopluslabs.io |
 | Jupiter | Swap quotes/execution | Yes (`lite-api.jup.ag`, low rate limit) | https://portal.jup.ag for a paid key later |
 | X (Twitter) API | Social due-diligence | **No** — pay-per-use since Feb 2026 (~$0.005/read) | https://developer.x.com |
 | Solana RPC | Reading prices/sending transactions | Yes (public RPC is slow/rate-limited) | https://helius.dev or https://quicknode.com |
 
-DexScreener and GeckoTerminal (market data + 4h candles) need **no API key**.
+DexScreener, GeckoTerminal (market data + 4h candles), and RugCheck's public
+report endpoint all need **no API key**. RugCheck's authenticated tier uses a
+Solana-wallet-signed login rather than a simple dashboard key, which this bot
+doesn't implement — the free unauthenticated endpoint already provides
+everything the safety screen needs.
 
 X's API has no free tier anymore. The bot caches aggressively
 (`social.cache_ttl_minutes`) and caps reads per token scan

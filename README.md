@@ -139,7 +139,25 @@ If you'd rather not pay for it yet, set `social.enabled: false` in
 `config/config.yaml` and the bot will skip the X check and rely on the
 on-chain checks alone (not recommended long-term, but fine to get started).
 
-### 4. Run in paper mode
+### 4. (Recommended) Set up phone notifications via Telegram
+
+Without this, the only way to see what the bot is doing is watching the
+terminal. With it, you get a Telegram message whenever a position opens,
+closes, or trading gets paused.
+
+1. In Telegram, message **@BotFather** and send `/newbot`. Follow the
+   prompts (pick a name and a username ending in `bot`). It replies with a
+   token like `123456789:AAExampleTokenGoesHere` — put that in `.env` as
+   `TELEGRAM_BOT_TOKEN`.
+2. Send your new bot any message first (e.g. "hi") — Telegram bots can't
+   message you until you've messaged them.
+3. Find your numeric chat ID: message **@userinfobot** and it replies with
+   your ID (a number like `123456789`). Put that in `.env` as
+   `TELEGRAM_CHAT_ID`.
+4. That's it — no code changes needed, the bot picks this up automatically
+   next time it starts.
+
+### 5. Run in paper mode
 
 ```bash
 python main.py --once      # single pass: good first test
@@ -151,15 +169,7 @@ Watch the logs. Every candidate token, every rejection reason, every
 before ever considering live capital — you're validating both the strategy
 and that the safety checks are actually catching what you think they are.
 
-> **A note on this repository's dev environment**: the sandbox this bot was
-> built in has restricted outbound network access and can't reach the live
-> DexScreener/GeckoTerminal/RugCheck/GoPlus/Jupiter/X APIs, so the HTTP
-> integration code hasn't been exercised against live traffic here — only
-> unit-tested against the documented API shapes. Run `python main.py --once`
-> yourself first, on a machine with normal internet access, and read the
-> logs closely before leaving it running unattended.
-
-### 5. (Much later) Going live
+### 6. (Much later) Going live
 
 Only after you've watched paper mode make sensible decisions for a while:
 

@@ -28,6 +28,7 @@ from memebot.risk.risk_manager import RiskManager
 from memebot.safety.screener import SafetyScreener
 from memebot.strategy.signals import generate_entry_signal
 from memebot.core.portfolio import Portfolio
+from memebot.utils.telegram_notifier import TelegramNotifier
 
 log = structlog.get_logger(__name__)
 
@@ -44,6 +45,7 @@ class MemeBot:
         self.broker: Broker = LiveBroker(settings, self.jupiter) if settings.is_live else PaperBroker(self.jupiter)
         self.portfolio = Portfolio()
         self.risk_manager = RiskManager(settings.trading, settings.trading.capital_sol)
+        self.notifier = TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id)
 
         log.info(
             "bot.initialized",
@@ -159,6 +161,13 @@ class MemeBot:
             high_water_mark=entry_price,
         )
         self.portfolio.open_position(position)
+        self.notifier.send(
+            f"🟢 <b>Opened {position.symbol}</b> ({'LIVE' if self.settings.is_live else 'paper'})\n"
+            f"Entry: ${entry_price:.8f}\n"
+            f"Size: {sizing.size_sol:.5f} SOL\n"
+            f"Stop: ${signal.stop_loss:.8f}  Target: ${signal.take_profit:.8f}\n"
+            f"Token: <code>{market.token_address}</code>"
+        )
 
     # ------------------------------------------------------------------
     # Exit monitoring
@@ -206,7 +215,23 @@ class MemeBot:
                 close_price = fill.filled_price or current_price
                 closed = self.portfolio.close_position(token_address, close_price, reason)
                 if closed:
+                    was_paused_before = self.risk_manager.state.paused_until
                     self.risk_manager.record_trade_closed(closed.pnl_sol or 0.0)
+
+                    pnl_sol = closed.pnl_sol or 0.0
+                    emoji = "✅" if pnl_sol >= 0 else "🔻"
+                    self.notifier.send(
+                        f"{emoji} <b>Closed {closed.symbol}</b> ({reason})\n"
+                        f"PnL: {pnl_sol:+.5f} SOL ({(closed.pnl_pct or 0) * 100:+.1f}%)\n"
+                        f"Daily PnL: {self.risk_manager.state.daily_pnl_sol:+.5f} SOL"
+                    )
+
+                    now_paused = self.risk_manager.state.paused_until
+                    if now_paused and now_paused != was_paused_before:
+                        self.notifier.send(
+                            f"⏸ <b>Trading paused</b> until {now_paused.strftime('%Y-%m-%d %H:%M UTC')} "
+                            f"after {self.risk_manager.state.consecutive_losses} losses in a row."
+                        )
 
     # ------------------------------------------------------------------
     # Loop
@@ -219,6 +244,10 @@ class MemeBot:
             "bot.starting",
             mode=self.settings.trading.mode,
             warning="LIVE TRADING" if self.settings.is_live else "paper trading (no funds at risk)",
+        )
+        self.notifier.send(
+            f"🤖 Memebot started — {'⚠️ LIVE TRADING' if self.settings.is_live else 'paper mode (no funds at risk)'}\n"
+            f"Capital: {self.settings.trading.capital_sol} SOL"
         )
 
         while True:
@@ -246,5 +275,6 @@ class MemeBot:
         self.geckoterminal.close()
         self.screener.close()
         self.jupiter.close()
+        self.notifier.close()
         if isinstance(self.broker, LiveBroker):
             self.broker.close()

@@ -164,7 +164,7 @@ Once running, message your bot any of these commands:
 |---|---|
 | `/status` | Mode, capital, open positions, daily PnL, whether trading is paused |
 | `/positions` | Live details on every open position (entry, current price, PnL, stop, target) |
-| `/pnl` | Realized PnL summary: closed trades, win rate |
+| `/pnl` | **All-time** realized PnL, win rate, best/worst trade — survives restarts |
 | `/pause` | Stop opening new positions (anything already open keeps being monitored and can still hit its stop/target) |
 | `/resume` | Re-enable opening new positions |
 | `/help` | List commands |
@@ -241,9 +241,10 @@ memebot/
   strategy/              indicators (EMA/RSI/Bollinger/ATR) + 4h entry signal
   risk/                  position sizing (1% rule) + circuit breakers
   execution/             paper broker, Jupiter client, live broker
-  core/                  bot loop + portfolio tracking
+  core/                  bot loop, portfolio tracking, persistent trade log
 tests/                   unit tests for every pure-logic module (no network calls)
 main.py                  entry point
+data/                    generated at runtime: trade_log_paper.csv / trade_log_live.csv (not tracked in git)
 ```
 
 ## Testing
@@ -252,7 +253,7 @@ main.py                  entry point
 pytest tests/ -v
 ```
 
-All 40 tests run offline against mock data — they validate the safety
+All 45 tests run offline against mock data — they validate the safety
 scoring, position sizing, risk circuit breakers, and indicator math, not
 live API behavior.
 
@@ -262,9 +263,12 @@ live API behavior.
   free API has no dedicated new-pairs feed. For serious use, replace
   `DexScreenerClient.get_new_pairs` with a Helius webhook or a direct
   pump.fun/Raydium program-log listener for real-time new-pool detection.
-- **No persistence**: portfolio/risk state resets if the process restarts.
-  Fine for paper testing; add a database or JSON snapshot before running
-  live unattended for long periods.
+- **Partial persistence**: closed-trade history is saved permanently to
+  `data/trade_log_<mode>.csv` (readable in Excel/Sheets, and what `/pnl`
+  reports from). *Open* positions and the risk manager's daily-loss/
+  loss-streak counters are still in-memory only and reset if the process
+  restarts — add a database or JSON snapshot for those before running live
+  unattended for long periods.
 - **X sentiment is keyword-based**, not a real NLP model — it catches
   obvious cases ("rug", "scam", "honeypot") but will miss subtler signals.
 - **RugCheck's raw risk-score threshold** (`safety.max_rugcheck_risk_score`)

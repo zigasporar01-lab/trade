@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 
 import structlog
 
-from memebot.config import Settings
+from memebot.config import REPO_ROOT, Settings
 from memebot.data.dexscreener import DexScreenerClient
 from memebot.data.geckoterminal import GeckoTerminalClient
 from memebot.execution.broker import Broker
@@ -28,6 +28,7 @@ from memebot.risk.risk_manager import RiskManager
 from memebot.safety.screener import SafetyScreener
 from memebot.strategy.signals import generate_entry_signal
 from memebot.core.portfolio import Portfolio
+from memebot.core.trade_log import TradeLog
 from memebot.utils.telegram_commands import TelegramCommandListener
 from memebot.utils.telegram_notifier import TelegramNotifier
 
@@ -46,6 +47,8 @@ class MemeBot:
         self.broker: Broker = LiveBroker(settings, self.jupiter) if settings.is_live else PaperBroker(self.jupiter)
         self.portfolio = Portfolio()
         self.risk_manager = RiskManager(settings.trading, settings.trading.capital_sol)
+        # Separate log per mode so paper-testing history never mixes with real trades.
+        self.trade_log = TradeLog(REPO_ROOT / "data" / f"trade_log_{settings.mode_normalized}.csv")
         self.notifier = TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id)
         self.command_listener = TelegramCommandListener(
             bot_token=settings.telegram_bot_token,
@@ -55,6 +58,7 @@ class MemeBot:
             risk_manager=self.risk_manager,
             settings=self.settings,
             dexscreener=self.dexscreener,
+            trade_log=self.trade_log,
         )
 
         log.info(
@@ -225,6 +229,11 @@ class MemeBot:
                 close_price = fill.filled_price or current_price
                 closed = self.portfolio.close_position(token_address, close_price, reason)
                 if closed:
+                    try:
+                        self.trade_log.record(closed, mode=self.settings.mode_normalized)
+                    except Exception as exc:  # noqa: BLE001 - a failed log write must never block trading
+                        log.warning("bot.trade_log_write_failed", error=str(exc))
+
                     was_paused_before = self.risk_manager.state.paused_until
                     self.risk_manager.record_trade_closed(closed.pnl_sol or 0.0)
 

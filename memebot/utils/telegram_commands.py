@@ -34,6 +34,7 @@ class TelegramCommandListener:
         risk_manager,
         settings,
         dexscreener,
+        trade_log,
     ) -> None:
         self._bot_token = bot_token
         self._chat_id = str(chat_id) if chat_id else None
@@ -42,6 +43,7 @@ class TelegramCommandListener:
         self._risk_manager = risk_manager
         self._settings = settings
         self._dexscreener = dexscreener
+        self._trade_log = trade_log
         self._client = httpx.Client(timeout=POLL_TIMEOUT_SECONDS + 10)
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -114,7 +116,7 @@ class TelegramCommandListener:
             "<b>Available commands</b>\n"
             "/status — mode, capital, open positions, daily PnL\n"
             "/positions — details on each open position\n"
-            "/pnl — realized PnL summary\n"
+            "/pnl — all-time realized PnL (survives restarts)\n"
             "/pause — stop opening new positions (open ones still monitored)\n"
             "/resume — re-enable opening new positions\n"
             "/help — this message"
@@ -170,13 +172,19 @@ class TelegramCommandListener:
         self._notifier.send("\n".join(lines))
 
     def _cmd_pnl(self) -> None:
-        s = self._portfolio.summary()
+        # All-time, from the persistent trade log — not just this session's
+        # in-memory state, which resets every time the process restarts.
+        s = self._trade_log.summary()
         win_rate = f"{s['win_rate'] * 100:.0f}%" if s["win_rate"] is not None else "n/a"
+        best = f"{s['best_trade_sol']:+.5f} SOL" if s["best_trade_sol"] is not None else "n/a"
+        worst = f"{s['worst_trade_sol']:+.5f} SOL" if s["worst_trade_sol"] is not None else "n/a"
         self._notifier.send(
-            "<b>PnL summary</b>\n"
-            f"Closed trades: {s['closed_positions']} ({s['wins']}W / {s['losses']}L, {win_rate} win rate)\n"
-            f"Realized PnL: {s['realized_pnl_sol']:+.5f} SOL\n"
-            f"Currently open: {s['open_positions']}"
+            "<b>All-time PnL</b> (survives restarts)\n"
+            f"Closed trades: {s['total_trades']} ({s['wins']}W / {s['losses']}L, {win_rate} win rate)\n"
+            f"Total realized PnL: {s['total_pnl_sol']:+.5f} SOL\n"
+            f"Best trade: {best}\n"
+            f"Worst trade: {worst}\n"
+            f"Currently open: {self._portfolio.open_count}"
         )
 
     def _cmd_pause(self) -> None:

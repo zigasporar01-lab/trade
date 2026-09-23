@@ -21,6 +21,7 @@ class RiskState:
     daily_pnl_sol: float = 0.0
     consecutive_losses: int = 0
     paused_until: datetime | None = None
+    manual_pause: bool = False
 
 
 class RiskManager:
@@ -33,10 +34,24 @@ class RiskManager:
         today = datetime.utcnow().strftime("%Y-%m-%d")
         if today != self.state.day:
             log.info("risk.day_rolled", previous_day=self.state.day, previous_pnl_sol=self.state.daily_pnl_sol)
-            self.state = RiskState(day=today)
+            # A manual pause is a deliberate, indefinite choice — it must
+            # survive the daily state reset, unlike the loss-streak cooldown
+            # and daily PnL, which are meant to clear at the day boundary.
+            self.state = RiskState(day=today, manual_pause=self.state.manual_pause)
+
+    def pause_manually(self) -> None:
+        self.state.manual_pause = True
+        log.warning("risk.manual_pause_enabled")
+
+    def resume_manually(self) -> None:
+        self.state.manual_pause = False
+        log.warning("risk.manual_pause_disabled")
 
     def can_open_new_position(self, open_position_count: int) -> tuple[bool, str]:
         self._roll_day_if_needed()
+
+        if self.state.manual_pause:
+            return False, "Trading manually paused (send /resume on Telegram to re-enable)."
 
         if self.state.paused_until and datetime.utcnow() < self.state.paused_until:
             return False, f"Trading paused until {self.state.paused_until.isoformat()} (loss-streak cooldown)."

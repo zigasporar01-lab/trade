@@ -55,3 +55,29 @@ def test_win_resets_consecutive_loss_counter():
     rm.record_trade_closed(0.01)
     assert rm.state.consecutive_losses == 0
     assert rm.state.paused_until is None
+
+
+def test_manual_pause_blocks_new_trades():
+    rm = make_manager()
+    rm.pause_manually()
+    ok, reason = rm.can_open_new_position(open_position_count=0)
+    assert not ok
+    assert "manually paused" in reason.lower()
+
+
+def test_manual_resume_re_enables_trading():
+    rm = make_manager()
+    rm.pause_manually()
+    rm.resume_manually()
+    ok, _ = rm.can_open_new_position(open_position_count=0)
+    assert ok
+
+
+def test_manual_pause_survives_day_roll():
+    rm = make_manager()
+    rm.pause_manually()
+    rm.state.day = "2000-01-01"  # force the next call to see a "new day"
+    ok, reason = rm.can_open_new_position(open_position_count=0)
+    assert not ok
+    assert "manually paused" in reason.lower()
+    assert rm.state.manual_pause is True

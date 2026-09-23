@@ -139,11 +139,12 @@ If you'd rather not pay for it yet, set `social.enabled: false` in
 `config/config.yaml` and the bot will skip the X check and rely on the
 on-chain checks alone (not recommended long-term, but fine to get started).
 
-### 4. (Recommended) Set up phone notifications via Telegram
+### 4. (Recommended) Set up phone notifications and control via Telegram
 
 Without this, the only way to see what the bot is doing is watching the
 terminal. With it, you get a Telegram message whenever a position opens,
-closes, or trading gets paused.
+closes, or trading gets paused — and you can message a small set of
+commands back to check on or control the bot from your phone.
 
 1. In Telegram, message **@BotFather** and send `/newbot`. Follow the
    prompts (pick a name and a username ending in `bot`). It replies with a
@@ -156,6 +157,23 @@ closes, or trading gets paused.
    `TELEGRAM_CHAT_ID`.
 4. That's it — no code changes needed, the bot picks this up automatically
    next time it starts.
+
+Once running, message your bot any of these commands:
+
+| Command | What it does |
+|---|---|
+| `/status` | Mode, capital, open positions, daily PnL, whether trading is paused |
+| `/positions` | Live details on every open position (entry, current price, PnL, stop, target) |
+| `/pnl` | Realized PnL summary: closed trades, win rate |
+| `/pause` | Stop opening new positions (anything already open keeps being monitored and can still hit its stop/target) |
+| `/resume` | Re-enable opening new positions |
+| `/help` | List commands |
+
+This is a fixed set of commands, not free-form AI chat — the bot answers
+with real numbers pulled from its own state, it doesn't reason or improvise
+replies. Only messages from your configured `TELEGRAM_CHAT_ID` are acted on;
+everything else is silently ignored, since the bot's username is publicly
+searchable on Telegram.
 
 ### 5. Run in paper mode
 
@@ -234,7 +252,7 @@ main.py                  entry point
 pytest tests/ -v
 ```
 
-All 37 tests run offline against mock data — they validate the safety
+All 40 tests run offline against mock data — they validate the safety
 scoring, position sizing, risk circuit breakers, and indicator math, not
 live API behavior.
 

@@ -1,0 +1,191 @@
+"""Two-way Telegram control: a background thread long-polls for incoming
+messages and responds to a small fixed set of commands with live data
+pulled straight from the running bot — no free-form AI chat, just
+/status, /positions, /pnl, /pause, /resume.
+
+Security: the bot's Telegram username is publicly searchable, so anyone
+could message it. Every incoming message is checked against the configured
+chat_id; anything else is logged and silently ignored rather than acted on.
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from datetime import datetime
+
+import httpx
+import structlog
+
+from memebot.utils.telegram_notifier import BASE_URL, TelegramNotifier
+
+log = structlog.get_logger(__name__)
+
+POLL_TIMEOUT_SECONDS = 25
+
+
+class TelegramCommandListener:
+    def __init__(
+        self,
+        bot_token: str | None,
+        chat_id: str | None,
+        notifier: TelegramNotifier,
+        portfolio,
+        risk_manager,
+        settings,
+        dexscreener,
+    ) -> None:
+        self._bot_token = bot_token
+        self._chat_id = str(chat_id) if chat_id else None
+        self._notifier = notifier
+        self._portfolio = portfolio
+        self._risk_manager = risk_manager
+        self._settings = settings
+        self._dexscreener = dexscreener
+        self._client = httpx.Client(timeout=POLL_TIMEOUT_SECONDS + 10)
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._offset = 0
+
+    @property
+    def configured(self) -> bool:
+        return bool(self._bot_token and self._chat_id)
+
+    def start(self) -> None:
+        if not self.configured:
+            return
+        self._thread = threading.Thread(target=self._poll_loop, daemon=True, name="telegram-commands")
+        self._thread.start()
+        log.info("telegram.command_listener_started")
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._client.close()
+
+    def _poll_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                self._poll_once()
+            except Exception as exc:  # noqa: BLE001 - a failed poll must never kill the listener thread
+                log.warning("telegram.poll_failed", error=str(exc))
+                time.sleep(5)
+
+    def _poll_once(self) -> None:
+        resp = self._client.get(
+            f"{BASE_URL}/bot{self._bot_token}/getUpdates",
+            params={"offset": self._offset, "timeout": POLL_TIMEOUT_SECONDS},
+        )
+        resp.raise_for_status()
+        for update in resp.json().get("result", []):
+            self._offset = update["update_id"] + 1
+            message = update.get("message") or {}
+            chat = message.get("chat") or {}
+            text = (message.get("text") or "").strip()
+
+            if str(chat.get("id")) != self._chat_id:
+                log.warning("telegram.ignored_unauthorized_chat", chat_id=chat.get("id"))
+                continue
+            if text.startswith("/"):
+                self._handle_command(text)
+
+    def _handle_command(self, text: str) -> None:
+        command = text.split()[0].lower().lstrip("/").split("@")[0]
+        handlers = {
+            "start": self._cmd_help,
+            "help": self._cmd_help,
+            "status": self._cmd_status,
+            "positions": self._cmd_positions,
+            "pnl": self._cmd_pnl,
+            "pause": self._cmd_pause,
+            "resume": self._cmd_resume,
+        }
+        handler = handlers.get(command)
+        if handler is None:
+            self._notifier.send(f"Unknown command: /{command}\nSend /help to see available commands.")
+            return
+        try:
+            handler()
+        except Exception as exc:  # noqa: BLE001 - a broken command handler must not kill the listener
+            log.warning("telegram.command_failed", command=command, error=str(exc))
+            self._notifier.send(f"⚠️ Something went wrong running /{command}. Check the terminal logs.")
+
+    def _cmd_help(self) -> None:
+        self._notifier.send(
+            "<b>Available commands</b>\n"
+            "/status — mode, capital, open positions, daily PnL\n"
+            "/positions — details on each open position\n"
+            "/pnl — realized PnL summary\n"
+            "/pause — stop opening new positions (open ones still monitored)\n"
+            "/resume — re-enable opening new positions\n"
+            "/help — this message"
+        )
+
+    def _cmd_status(self) -> None:
+        rm = self._risk_manager
+        paused_reason = None
+        if rm.state.manual_pause:
+            paused_reason = "manually paused"
+        elif rm.state.paused_until and datetime.utcnow() < rm.state.paused_until:
+            paused_reason = f"loss-streak cooldown until {rm.state.paused_until.strftime('%H:%M UTC')}"
+
+        self._notifier.send(
+            f"<b>Status</b> ({'⚠️ LIVE' if self._settings.is_live else 'paper'})\n"
+            f"Capital: {self._settings.trading.capital_sol} SOL\n"
+            f"Open positions: {self._portfolio.open_count}/{self._settings.trading.max_concurrent_positions}\n"
+            f"Committed: {self._portfolio.open_capital_sol:.5f} SOL\n"
+            f"Daily PnL: {rm.state.daily_pnl_sol:+.5f} SOL\n"
+            f"Consecutive losses: {rm.state.consecutive_losses}\n"
+            f"Trading: {'⏸ PAUSED (' + paused_reason + ')' if paused_reason else '▶️ active'}"
+        )
+
+    def _cmd_positions(self) -> None:
+        positions = list(self._portfolio.open_positions.values())
+        if not positions:
+            self._notifier.send("No open positions.")
+            return
+
+        lines = ["<b>Open positions</b>"]
+        for p in positions:
+            current_price = None
+            try:
+                pairs = self._dexscreener.get_token_pairs(self._settings.trading.chain, p.token_address)
+                if pairs:
+                    current_price = pairs[0].price_usd
+            except Exception:  # noqa: BLE001 - show the position without a live price rather than fail the reply
+                pass
+
+            pnl_str = "unknown"
+            price_str = "unknown"
+            if current_price is not None:
+                pnl_str = f"{(current_price - p.entry_price) / p.entry_price * 100:+.1f}%"
+                price_str = f"${current_price:.8f}"
+
+            lines.append(
+                f"\n<b>{p.symbol}</b>\n"
+                f"Entry: ${p.entry_price:.8f}  Now: {price_str}\n"
+                f"PnL: {pnl_str}\n"
+                f"Stop: ${p.stop_loss:.8f}  Target: ${p.take_profit:.8f}\n"
+                f"Opened: {p.opened_at.strftime('%Y-%m-%d %H:%M UTC')}"
+            )
+        self._notifier.send("\n".join(lines))
+
+    def _cmd_pnl(self) -> None:
+        s = self._portfolio.summary()
+        win_rate = f"{s['win_rate'] * 100:.0f}%" if s["win_rate"] is not None else "n/a"
+        self._notifier.send(
+            "<b>PnL summary</b>\n"
+            f"Closed trades: {s['closed_positions']} ({s['wins']}W / {s['losses']}L, {win_rate} win rate)\n"
+            f"Realized PnL: {s['realized_pnl_sol']:+.5f} SOL\n"
+            f"Currently open: {s['open_positions']}"
+        )
+
+    def _cmd_pause(self) -> None:
+        self._risk_manager.pause_manually()
+        self._notifier.send(
+            "⏸ Trading paused. Open positions are still monitored and can still "
+            "hit their stop/target. Send /resume to re-enable new entries."
+        )
+
+    def _cmd_resume(self) -> None:
+        self._risk_manager.resume_manually()
+        self._notifier.send("▶️ Trading resumed. New candidates can be entered again.")

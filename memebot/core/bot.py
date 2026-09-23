@@ -28,6 +28,7 @@ from memebot.risk.risk_manager import RiskManager
 from memebot.safety.screener import SafetyScreener
 from memebot.strategy.signals import generate_entry_signal
 from memebot.core.portfolio import Portfolio
+from memebot.utils.telegram_commands import TelegramCommandListener
 from memebot.utils.telegram_notifier import TelegramNotifier
 
 log = structlog.get_logger(__name__)
@@ -46,6 +47,15 @@ class MemeBot:
         self.portfolio = Portfolio()
         self.risk_manager = RiskManager(settings.trading, settings.trading.capital_sol)
         self.notifier = TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id)
+        self.command_listener = TelegramCommandListener(
+            bot_token=settings.telegram_bot_token,
+            chat_id=settings.telegram_chat_id,
+            notifier=self.notifier,
+            portfolio=self.portfolio,
+            risk_manager=self.risk_manager,
+            settings=self.settings,
+            dexscreener=self.dexscreener,
+        )
 
         log.info(
             "bot.initialized",
@@ -247,8 +257,10 @@ class MemeBot:
         )
         self.notifier.send(
             f"🤖 Memebot started — {'⚠️ LIVE TRADING' if self.settings.is_live else 'paper mode (no funds at risk)'}\n"
-            f"Capital: {self.settings.trading.capital_sol} SOL"
+            f"Capital: {self.settings.trading.capital_sol} SOL\n"
+            f"Send /help to see available commands."
         )
+        self.command_listener.start()
 
         while True:
             try:
@@ -271,6 +283,7 @@ class MemeBot:
             time.sleep(loop_cfg.position_monitor_interval_minutes * 60)
 
     def close(self) -> None:
+        self.command_listener.stop()
         self.dexscreener.close()
         self.geckoterminal.close()
         self.screener.close()

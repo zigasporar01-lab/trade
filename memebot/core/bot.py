@@ -85,6 +85,7 @@ class MemeBot:
             dexscreener=self.dexscreener,
             trade_log=self.trade_log,
             state_store=self.state_store,
+            close_all_callback=self.close_all_positions,
         )
 
         log.info(
@@ -247,6 +248,47 @@ class MemeBot:
     # ------------------------------------------------------------------
     # Exit monitoring
     # ------------------------------------------------------------------
+    def _close_position(self, token_address: str, position, close_price: float, reason: str) -> bool:
+        """Shared by monitor_positions (stop/target/time exits) and
+        close_all_positions (the /closeall emergency command) so there's
+        one place that handles selling, logging, and notifying — not two
+        copies that could drift apart.
+        """
+        fill = self.broker.sell(token_address, position.size_tokens, self.settings.trading.slippage_bps)
+        if not fill.success:
+            log.error("bot.sell_failed", token=token_address, error=fill.error)
+            return False
+
+        final_price = fill.filled_price or close_price
+        closed = self.portfolio.close_position(token_address, final_price, reason)
+        if not closed:
+            return False
+
+        try:
+            self.trade_log.record(closed, mode=self.settings.mode_normalized)
+        except Exception as exc:  # noqa: BLE001 - a failed log write must never block trading
+            log.warning("bot.trade_log_write_failed", error=str(exc))
+
+        was_paused_before = self.risk_manager.state.paused_until
+        self.risk_manager.record_trade_closed(closed.pnl_sol or 0.0)
+        self._save_state()
+
+        pnl_sol = closed.pnl_sol or 0.0
+        emoji = "✅" if pnl_sol >= 0 else "🔻"
+        self.notifier.send(
+            f"{emoji} <b>Closed {closed.symbol}</b> ({reason})\n"
+            f"PnL: {pnl_sol:+.5f} SOL ({(closed.pnl_pct or 0) * 100:+.1f}%)\n"
+            f"Daily PnL: {self.risk_manager.state.daily_pnl_sol:+.5f} SOL"
+        )
+
+        now_paused = self.risk_manager.state.paused_until
+        if now_paused and now_paused != was_paused_before:
+            self.notifier.send(
+                f"⏸ <b>Trading paused</b> until {now_paused.strftime('%Y-%m-%d %H:%M UTC')} "
+                f"after {self.risk_manager.state.consecutive_losses} losses in a row."
+            )
+        return True
+
     def monitor_positions(self) -> None:
         cfg = self.settings.exits
         for token_address, position in list(self.portfolio.open_positions.items()):
@@ -283,36 +325,27 @@ class MemeBot:
                         position.stop_loss = new_stop
 
             if reason:
-                fill = self.broker.sell(token_address, position.size_tokens, self.settings.trading.slippage_bps)
-                if not fill.success:
-                    log.error("bot.sell_failed", token=token_address, error=fill.error)
-                    continue
-                close_price = fill.filled_price or current_price
-                closed = self.portfolio.close_position(token_address, close_price, reason)
-                if closed:
-                    try:
-                        self.trade_log.record(closed, mode=self.settings.mode_normalized)
-                    except Exception as exc:  # noqa: BLE001 - a failed log write must never block trading
-                        log.warning("bot.trade_log_write_failed", error=str(exc))
+                self._close_position(token_address, position, current_price, reason)
 
-                    was_paused_before = self.risk_manager.state.paused_until
-                    self.risk_manager.record_trade_closed(closed.pnl_sol or 0.0)
-                    self._save_state()
+    def close_all_positions(self, reason: str = "manual_closeall") -> int:
+        """The /closeall emergency stop: sell every open position right
+        now, at whatever price is available. Used from the Telegram
+        command listener via a bound callback.
+        """
+        closed_count = 0
+        for token_address, position in list(self.portfolio.open_positions.items()):
+            try:
+                pairs = self.dexscreener.get_token_pairs(self.settings.trading.chain, token_address)
+                current_price = pairs[0].price_usd if pairs else position.entry_price
+            except Exception as exc:  # noqa: BLE001 - fall back to entry price rather than skip closing it
+                log.warning("bot.closeall_price_lookup_failed", token=token_address, error=str(exc))
+                current_price = position.entry_price
 
-                    pnl_sol = closed.pnl_sol or 0.0
-                    emoji = "✅" if pnl_sol >= 0 else "🔻"
-                    self.notifier.send(
-                        f"{emoji} <b>Closed {closed.symbol}</b> ({reason})\n"
-                        f"PnL: {pnl_sol:+.5f} SOL ({(closed.pnl_pct or 0) * 100:+.1f}%)\n"
-                        f"Daily PnL: {self.risk_manager.state.daily_pnl_sol:+.5f} SOL"
-                    )
+            if self._close_position(token_address, position, current_price, reason):
+                closed_count += 1
 
-                    now_paused = self.risk_manager.state.paused_until
-                    if now_paused and now_paused != was_paused_before:
-                        self.notifier.send(
-                            f"⏸ <b>Trading paused</b> until {now_paused.strftime('%Y-%m-%d %H:%M UTC')} "
-                            f"after {self.risk_manager.state.consecutive_losses} losses in a row."
-                        )
+        log.warning("bot.closeall_executed", closed_count=closed_count)
+        return closed_count
 
     # ------------------------------------------------------------------
     # Loop

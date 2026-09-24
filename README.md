@@ -169,7 +169,14 @@ type `/`) to see all commands as a tappable list:
 | `/export` | Sends the trade log straight to this chat as a formatted, color-coded `.xlsx` file |
 | `/pause` | Stop opening new positions (anything already open keeps being monitored and can still hit its stop/target) |
 | `/resume` | Re-enable opening new positions |
+| `/closeall` | **Emergency stop**: sells every open position immediately, at whatever price is available |
 | `/help` | List commands |
+
+`/closeall` is a kill switch, not a pause — it executes immediately with
+no confirmation step (only your configured `TELEGRAM_CHAT_ID` can trigger
+it, so a second confirmation would just slow down the one moment it
+matters). It closes existing positions only; trading stays active for new
+entries afterward — send `/pause` too if you want that stopped as well.
 
 This is a fixed set of commands, not free-form AI chat — the bot answers
 with real numbers pulled from its own state, it doesn't reason or improvise
@@ -303,7 +310,7 @@ file.
 pytest tests/ -v
 ```
 
-All 71 tests run offline against mock data — they validate the safety
+All 79 tests run offline against mock data — they validate the safety
 scoring, position sizing, risk circuit breakers, and indicator math, not
 live API behavior.
 

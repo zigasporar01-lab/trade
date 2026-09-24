@@ -31,6 +31,7 @@ BOT_COMMANDS = [
     {"command": "export", "description": "Get the trade log as a formatted Excel file"},
     {"command": "pause", "description": "Stop opening new positions"},
     {"command": "resume", "description": "Re-enable opening new positions"},
+    {"command": "closeall", "description": "EMERGENCY: sell every open position right now"},
     {"command": "help", "description": "List commands"},
 ]
 
@@ -47,6 +48,7 @@ class TelegramCommandListener:
         dexscreener,
         trade_log,
         state_store=None,
+        close_all_callback=None,
     ) -> None:
         self._bot_token = bot_token
         self._chat_id = str(chat_id) if chat_id else None
@@ -54,6 +56,7 @@ class TelegramCommandListener:
         self._portfolio = portfolio
         self._risk_manager = risk_manager
         self._settings = settings
+        self._close_all_callback = close_all_callback
         self._dexscreener = dexscreener
         self._trade_log = trade_log
         self._state_store = state_store
@@ -158,6 +161,7 @@ class TelegramCommandListener:
             "export": self._cmd_export,
             "pause": self._cmd_pause,
             "resume": self._cmd_resume,
+            "closeall": self._cmd_closeall,
         }
         handler = handlers.get(command)
         if handler is None:
@@ -178,6 +182,7 @@ class TelegramCommandListener:
             "/export — get the trade log as a formatted Excel file\n"
             "/pause — stop opening new positions (open ones still monitored)\n"
             "/resume — re-enable opening new positions\n"
+            "/closeall — EMERGENCY: sell every open position right now\n"
             "/help — this message"
         )
 
@@ -274,3 +279,20 @@ class TelegramCommandListener:
         self._risk_manager.resume_manually()
         self._save_state()
         self._notifier.send("▶️ Trading resumed. New candidates can be entered again.")
+
+    def _cmd_closeall(self) -> None:
+        if self._close_all_callback is None:
+            self._notifier.send("⚠️ /closeall isn't wired up in this bot instance.")
+            return
+
+        open_count = self._portfolio.open_count
+        if open_count == 0:
+            self._notifier.send("No open positions to close.")
+            return
+
+        self._notifier.send(f"🚨 Closing all {open_count} open position(s) now...")
+        closed_count = self._close_all_callback()
+        self._notifier.send(
+            f"🚨 <b>Emergency close complete</b>: {closed_count}/{open_count} position(s) closed. "
+            f"Trading remains active for new entries — send /pause if you want to stop that too."
+        )

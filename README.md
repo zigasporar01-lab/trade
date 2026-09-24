@@ -38,6 +38,8 @@ Social check (X / Twitter)                       │  trade. A single
   confirmed breakout above upper Bollinger Band
   breakout volume >= 1.5x the 20-candle average
   RSI healthy (50–75), not already overbought
+  higher-timeframe (daily) trend also confirms — won't buy a 4h
+  breakout that's fighting the broader trend
         │
         ▼
 Risk-managed position size (1% account risk rule, capped at 15% of capital)
@@ -328,7 +330,7 @@ file.
 pytest tests/ -v
 ```
 
-All 91 tests run offline against mock data — they validate the safety
+All 101 tests run offline against mock data — they validate the safety
 scoring, position sizing, risk circuit breakers, and indicator math, not
 live API behavior.
 

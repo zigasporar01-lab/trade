@@ -166,7 +166,24 @@ class MemeBot:
             log.warning("bot.candle_fetch_failed", token=market.token_address, error=str(exc))
             return
 
-        signal = generate_entry_signal(candles, self.settings.strategy, self.settings.exits)
+        # Higher-timeframe confirmation (e.g. daily): don't buy a 4h breakout
+        # that's fighting the broader trend. A fetch failure here is treated
+        # as "couldn't confirm" (empty list), not "skip the check" (None) —
+        # missing data blocks the entry, it never defaults to favorable.
+        higher_tf_candles = None
+        if self.settings.strategy.require_higher_tf_confirmation:
+            try:
+                higher_tf_candles = self.geckoterminal.get_ohlcv(
+                    network=network,
+                    pool_address=market.pair_address,
+                    aggregate_hours=self.settings.strategy.higher_tf_aggregate_hours,
+                    limit=self.settings.strategy.higher_tf_ema_slow + 10,
+                )
+            except Exception as exc:  # noqa: BLE001 - treated as "not enough history", handled below
+                log.warning("bot.higher_tf_candle_fetch_failed", token=market.token_address, error=str(exc))
+                higher_tf_candles = []
+
+        signal = generate_entry_signal(candles, self.settings.strategy, self.settings.exits, higher_tf_candles)
         if not signal.should_enter:
             log.info("bot.no_signal", token=market.token_address, symbol=market.symbol, reasons=signal.reasons)
             return

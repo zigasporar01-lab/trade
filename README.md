@@ -158,13 +158,15 @@ commands back to check on or control the bot from your phone.
 4. That's it — no code changes needed, the bot picks this up automatically
    next time it starts.
 
-Once running, message your bot any of these commands:
+Once running, tap the **menu button** next to Telegram's message box (or
+type `/`) to see all commands as a tappable list:
 
 | Command | What it does |
 |---|---|
 | `/status` | Mode, capital, open positions, daily PnL, whether trading is paused |
 | `/positions` | Live details on every open position (entry, current price, PnL, stop, target) |
-| `/pnl` | **All-time** realized PnL, win rate, best/worst trade — survives restarts |
+| `/pnl` | **All-time** realized PnL, win rate, best/worst trade — survives restarts. Includes a one-tap **"📊 Export to Excel"** button |
+| `/export` | Sends the trade log straight to this chat as a formatted, color-coded `.xlsx` file |
 | `/pause` | Stop opening new positions (anything already open keeps being monitored and can still hit its stop/target) |
 | `/resume` | Re-enable opening new positions |
 | `/help` | List commands |
@@ -255,7 +257,11 @@ column with no formatting — a regional-settings quirk (Excel expecting `;`
 instead of `,` as the list separator on some Windows locales), not a
 problem with the file itself.
 
-Instead, generate a proper formatted workbook:
+**Easiest way**: send `/export` to the bot on Telegram (or tap the
+"📊 Export to Excel" button on `/pnl`) and it delivers the formatted file
+straight to the chat — no terminal needed.
+
+Or generate it locally the same way the bot does internally:
 
 ```bash
 python scripts/format_trade_log.py

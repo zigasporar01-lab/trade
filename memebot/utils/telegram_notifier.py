@@ -11,6 +11,8 @@ alert is strictly best-effort.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 import structlog
 
@@ -29,17 +31,32 @@ class TelegramNotifier:
     def configured(self) -> bool:
         return bool(self._bot_token and self._chat_id)
 
-    def send(self, message: str) -> None:
+    def send(self, message: str, reply_markup: dict | None = None) -> None:
         if not self.configured:
             return
+        payload = {"chat_id": self._chat_id, "text": message, "parse_mode": "HTML"}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
         try:
-            resp = self._client.post(
-                f"{BASE_URL}/bot{self._bot_token}/sendMessage",
-                json={"chat_id": self._chat_id, "text": message, "parse_mode": "HTML"},
-            )
+            resp = self._client.post(f"{BASE_URL}/bot{self._bot_token}/sendMessage", json=payload)
             resp.raise_for_status()
         except Exception as exc:  # noqa: BLE001 - a failed notification must never break the bot
             log.warning("telegram.send_failed", error=str(exc))
+
+    def send_document(self, file_path: Path, caption: str | None = None) -> None:
+        if not self.configured:
+            return
+        try:
+            with open(file_path, "rb") as f:
+                resp = self._client.post(
+                    f"{BASE_URL}/bot{self._bot_token}/sendDocument",
+                    data={"chat_id": self._chat_id, **({"caption": caption} if caption else {})},
+                    files={"document": (file_path.name, f)},
+                    timeout=30.0,
+                )
+            resp.raise_for_status()
+        except Exception as exc:  # noqa: BLE001 - a failed send must never break the bot
+            log.warning("telegram.send_document_failed", error=str(exc))
 
     def close(self) -> None:
         self._client.close()

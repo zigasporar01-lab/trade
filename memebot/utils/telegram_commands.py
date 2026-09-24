@@ -17,11 +17,22 @@ from datetime import datetime
 import httpx
 import structlog
 
+from memebot.core.xlsx_export import build_workbook
 from memebot.utils.telegram_notifier import BASE_URL, TelegramNotifier
 
 log = structlog.get_logger(__name__)
 
 POLL_TIMEOUT_SECONDS = 25
+
+BOT_COMMANDS = [
+    {"command": "status", "description": "Mode, capital, open positions, daily PnL"},
+    {"command": "positions", "description": "Details on each open position"},
+    {"command": "pnl", "description": "All-time realized PnL summary"},
+    {"command": "export", "description": "Get the trade log as a formatted Excel file"},
+    {"command": "pause", "description": "Stop opening new positions"},
+    {"command": "resume", "description": "Re-enable opening new positions"},
+    {"command": "help", "description": "List commands"},
+]
 
 
 class TelegramCommandListener:
@@ -56,9 +67,22 @@ class TelegramCommandListener:
     def start(self) -> None:
         if not self.configured:
             return
+        self._register_command_menu()
         self._thread = threading.Thread(target=self._poll_loop, daemon=True, name="telegram-commands")
         self._thread.start()
         log.info("telegram.command_listener_started")
+
+    def _register_command_menu(self) -> None:
+        # Makes the commands appear as a tappable list behind Telegram's "/"
+        # menu button, instead of the user having to type them out.
+        try:
+            resp = self._client.post(
+                f"{BASE_URL}/bot{self._bot_token}/setMyCommands",
+                json={"commands": BOT_COMMANDS},
+            )
+            resp.raise_for_status()
+        except Exception as exc:  # noqa: BLE001 - purely cosmetic, must never block startup
+            log.warning("telegram.set_commands_failed", error=str(exc))
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -80,6 +104,12 @@ class TelegramCommandListener:
         resp.raise_for_status()
         for update in resp.json().get("result", []):
             self._offset = update["update_id"] + 1
+
+            callback_query = update.get("callback_query")
+            if callback_query:
+                self._handle_callback_query(callback_query)
+                continue
+
             message = update.get("message") or {}
             chat = message.get("chat") or {}
             text = (message.get("text") or "").strip()
@@ -90,6 +120,31 @@ class TelegramCommandListener:
             if text.startswith("/"):
                 self._handle_command(text)
 
+    def _handle_callback_query(self, callback_query: dict) -> None:
+        chat_id = ((callback_query.get("message") or {}).get("chat") or {}).get("id")
+        data = callback_query.get("data") or ""
+
+        # Always acknowledge the tap so Telegram clears the button's loading
+        # spinner, even for a chat we're about to ignore.
+        try:
+            self._client.post(
+                f"{BASE_URL}/bot{self._bot_token}/answerCallbackQuery",
+                json={"callback_query_id": callback_query.get("id")},
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("telegram.answer_callback_failed", error=str(exc))
+
+        if str(chat_id) != self._chat_id:
+            log.warning("telegram.ignored_unauthorized_chat", chat_id=chat_id)
+            return
+
+        if data == "export":
+            try:
+                self._cmd_export()
+            except Exception as exc:  # noqa: BLE001 - a broken handler must not kill the listener
+                log.warning("telegram.command_failed", command="export", error=str(exc))
+                self._notifier.send("⚠️ Something went wrong generating the Excel export. Check the terminal logs.")
+
     def _handle_command(self, text: str) -> None:
         command = text.split()[0].lower().lstrip("/").split("@")[0]
         handlers = {
@@ -98,6 +153,7 @@ class TelegramCommandListener:
             "status": self._cmd_status,
             "positions": self._cmd_positions,
             "pnl": self._cmd_pnl,
+            "export": self._cmd_export,
             "pause": self._cmd_pause,
             "resume": self._cmd_resume,
         }
@@ -117,6 +173,7 @@ class TelegramCommandListener:
             "/status — mode, capital, open positions, daily PnL\n"
             "/positions — details on each open position\n"
             "/pnl — all-time realized PnL (survives restarts)\n"
+            "/export — get the trade log as a formatted Excel file\n"
             "/pause — stop opening new positions (open ones still monitored)\n"
             "/resume — re-enable opening new positions\n"
             "/help — this message"
@@ -184,8 +241,16 @@ class TelegramCommandListener:
             f"Total realized PnL: {s['total_pnl_sol']:+.5f} SOL\n"
             f"Best trade: {best}\n"
             f"Worst trade: {worst}\n"
-            f"Currently open: {self._portfolio.open_count}"
+            f"Currently open: {self._portfolio.open_count}",
+            reply_markup={"inline_keyboard": [[{"text": "📊 Export to Excel", "callback_data": "export"}]]},
         )
+
+    def _cmd_export(self) -> None:
+        rows = self._trade_log.load_all()
+        wb = build_workbook(rows)
+        output_path = self._trade_log.path.with_suffix(".xlsx")
+        wb.save(output_path)
+        self._notifier.send_document(output_path, caption=f"Trade log export — {len(rows)} closed trade(s)")
 
     def _cmd_pause(self) -> None:
         self._risk_manager.pause_manually()

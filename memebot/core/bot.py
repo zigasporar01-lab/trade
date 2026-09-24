@@ -306,6 +306,47 @@ class MemeBot:
             )
         return True
 
+    def _execute_partial_exit(self, token_address: str, position, current_price: float) -> None:
+        """Sells exits.partial_exit_pct of the position once the trailing
+        stop activates, locking in some profit immediately while the rest
+        keeps running. A failed sell just leaves partial_exit_done False,
+        so it's retried on the next monitor_positions() cycle.
+        """
+        cfg = self.settings.exits
+        sell_size_tokens = position.size_tokens * cfg.partial_exit_pct
+        if sell_size_tokens <= 0:
+            return
+
+        fill = self.broker.sell(token_address, sell_size_tokens, self.settings.trading.slippage_bps)
+        if not fill.success:
+            log.warning("bot.partial_exit_failed", token=token_address, error=fill.error)
+            return
+
+        partial_fill_price = fill.filled_price or current_price
+        partial_pnl_pct = (partial_fill_price - position.entry_price) / position.entry_price
+        partial_sol_sold = position.size_sol * cfg.partial_exit_pct
+        partial_pnl_sol = partial_sol_sold * partial_pnl_pct
+
+        position.realized_partial_pnl_sol += partial_pnl_sol
+        position.size_tokens -= sell_size_tokens
+        position.size_sol -= partial_sol_sold
+        position.partial_exit_done = True
+        self._save_state()
+
+        log.info(
+            "bot.partial_exit_executed",
+            token=token_address,
+            symbol=position.symbol,
+            sold_pct=cfg.partial_exit_pct,
+            partial_pnl_sol=partial_pnl_sol,
+        )
+        self.notifier.send(
+            f"🟡 <b>Partial exit: {position.symbol}</b>\n"
+            f"Sold {cfg.partial_exit_pct:.0%} at ${partial_fill_price:.8f}\n"
+            f"Locked in: {partial_pnl_sol:+.5f} SOL\n"
+            f"Remaining {1 - cfg.partial_exit_pct:.0%} still running with trailing stop active."
+        )
+
     def monitor_positions(self) -> None:
         cfg = self.settings.exits
         for token_address, position in list(self.portfolio.open_positions.items()):
@@ -335,6 +376,12 @@ class MemeBot:
                     if gained_r >= cfg.trailing_stop_activate_rr:
                         position.trailing_active = True
                         log.info("bot.trailing_stop_activated", token=token_address, gained_r=gained_r)
+
+                # A separate, top-level check (not nested inside the block above) so
+                # a partial exit that failed on the cycle trailing_active first turned
+                # True still gets retried on every subsequent cycle, not just that one.
+                if position.trailing_active and cfg.partial_exit_enabled and not position.partial_exit_done:
+                    self._execute_partial_exit(token_address, position, current_price)
 
                 if position.trailing_active:
                     new_stop = position.high_water_mark - position.risk_unit

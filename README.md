@@ -49,9 +49,10 @@ Risk-managed position size (1% account risk rule, capped at 15% of capital)
 Execute via Jupiter (paper: simulated fill / live: real swap)
         │
         ▼
-Monitor: ATR stop-loss, 2.5R take-profit, trailing stop after 1.5R,
-         and a hard time-based exit if neither hits within 8 hours
-         (roughly double the 4h signal timeframe, per your "fast market" note).
+Monitor: ATR stop-loss, 2.5R take-profit, trailing stop + partial exit
+         (sells half the position) after 1.5R, and a hard time-based exit
+         if neither hits within 8 hours (roughly double the 4h signal
+         timeframe, per your "fast market" note).
 ```
 
 Every rejection is logged with the exact reason, so you can see *why* the
@@ -240,7 +241,21 @@ before changing:
   "don't make quick decisions" rule.
 - `safety.*` — every on-chain rug-pull threshold.
 - `social.*` — X due-diligence thresholds and spend controls.
-- `strategy.*` / `exits.*` — the 4h technical signal and exit rules.
+- `strategy.*` / `exits.*` — the 4h technical signal and exit rules,
+  including `strategy.require_higher_tf_confirmation` (daily-trend filter)
+  and `exits.partial_exit_enabled` / `partial_exit_pct` (see below).
+
+### Partial exits
+
+Once a position reaches `exits.trailing_stop_activate_rr` (1.5R by
+default), the bot sells `exits.partial_exit_pct` (50% by default) of it
+immediately — locking in real profit — while the trailing stop takes over
+on the rest. You'll get a `🟡 Partial exit` Telegram message when it
+happens. The eventual trade-log entry for that position reflects the
+**blended total** PnL (the partial sale plus however the remaining size
+closes), not two separate rows — `/pnl` and the Excel export both already
+show the true combined result without any extra work. Set
+`exits.partial_exit_enabled: false` to go back to all-or-nothing exits.
 
 ## Project layout
 
@@ -330,7 +345,7 @@ file.
 pytest tests/ -v
 ```
 
-All 101 tests run offline against mock data — they validate the safety
+All 106 tests run offline against mock data — they validate the safety
 scoring, position sizing, risk circuit breakers, and indicator math, not
 live API behavior.
 

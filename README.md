@@ -166,6 +166,7 @@ type `/`) to see all commands as a tappable list:
 | `/status` | Mode, capital, open positions, daily PnL, whether trading is paused |
 | `/positions` | Live details on every open position (entry, current price, PnL, stop, target) |
 | `/pnl` | **All-time** realized PnL, win rate, best/worst trade — survives restarts. Includes a one-tap **"📊 Export to Excel"** button |
+| `/analyze` | Plain-English patterns and suggestions from the trade log (see below) |
 | `/export` | Sends the trade log straight to this chat as a formatted, color-coded `.xlsx` file |
 | `/pause` | Stop opening new positions (anything already open keeps being monitored and can still hit its stop/target) |
 | `/resume` | Re-enable opening new positions |
@@ -258,7 +259,24 @@ data/                    generated at runtime: trade logs, state_<mode>.json, ba
 scripts/
   format_trade_log.py    turns the trade log CSV into a formatted, color-coded .xlsx
   run_backtest.py        backtests the strategy against real historical price data
+  analyze_trade_log.py   plain-English pattern suggestions from the trade log
 ```
+
+## Getting pattern suggestions from the trade log
+
+Instead of eyeballing the Excel export yourself, `/analyze` on Telegram
+(or `python scripts/analyze_trade_log.py` locally) reads the trade log and
+prints plain-English, actionable observations — e.g. "4 trades closed via
+max_hold_time with a combined -0.01200 SOL, consider lowering
+exits.max_hold_hours" or "these symbols lost every trade taken on them:
+X — worth checking why they kept passing the safety gate."
+
+This is **not** the bot learning or adapting on its own (see "does it
+learn from its mistakes" — no, it doesn't). It's a fixed set of
+rule-based checks over the closed-trade history that surface patterns for
+you to look at; nothing here edits `config.yaml` automatically. You read
+the suggestion, decide whether it's real signal or noise (small sample
+sizes get flagged explicitly), and make the change yourself if you agree.
 
 ## Viewing the trade log in Excel
 
@@ -310,7 +328,7 @@ file.
 pytest tests/ -v
 ```
 
-All 79 tests run offline against mock data — they validate the safety
+All 91 tests run offline against mock data — they validate the safety
 scoring, position sizing, risk circuit breakers, and indicator math, not
 live API behavior.
 

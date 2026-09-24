@@ -17,6 +17,7 @@ from datetime import datetime
 import httpx
 import structlog
 
+from memebot.core.trade_analysis import analyze
 from memebot.core.xlsx_export import build_workbook
 from memebot.utils.telegram_notifier import BASE_URL, TelegramNotifier
 
@@ -28,6 +29,7 @@ BOT_COMMANDS = [
     {"command": "status", "description": "Mode, capital, open positions, daily PnL"},
     {"command": "positions", "description": "Details on each open position"},
     {"command": "pnl", "description": "All-time realized PnL summary"},
+    {"command": "analyze", "description": "Plain-English patterns and suggestions from the trade log"},
     {"command": "export", "description": "Get the trade log as a formatted Excel file"},
     {"command": "pause", "description": "Stop opening new positions"},
     {"command": "resume", "description": "Re-enable opening new positions"},
@@ -158,6 +160,7 @@ class TelegramCommandListener:
             "status": self._cmd_status,
             "positions": self._cmd_positions,
             "pnl": self._cmd_pnl,
+            "analyze": self._cmd_analyze,
             "export": self._cmd_export,
             "pause": self._cmd_pause,
             "resume": self._cmd_resume,
@@ -179,6 +182,7 @@ class TelegramCommandListener:
             "/status — mode, capital, open positions, daily PnL\n"
             "/positions — details on each open position\n"
             "/pnl — all-time realized PnL (survives restarts)\n"
+            "/analyze — plain-English patterns and suggestions from the trade log\n"
             "/export — get the trade log as a formatted Excel file\n"
             "/pause — stop opening new positions (open ones still monitored)\n"
             "/resume — re-enable opening new positions\n"
@@ -251,6 +255,27 @@ class TelegramCommandListener:
             f"Currently open: {self._portfolio.open_count}",
             reply_markup={"inline_keyboard": [[{"text": "📊 Export to Excel", "callback_data": "export"}]]},
         )
+
+    def _cmd_analyze(self) -> None:
+        rows = self._trade_log.load_all()
+        result = analyze(rows)
+        o = result["overall"]
+
+        lines = ["<b>Trade log analysis</b>", f"Total trades: {o['total_trades']}"]
+        if o["win_rate"] is not None:
+            lines.append(f"Win rate: {o['win_rate'] * 100:.0f}% ({o['wins']}W / {o['losses']}L)")
+        lines.append(f"Total PnL: {o['total_pnl_sol']:+.5f} SOL")
+
+        if result["by_reason"]:
+            lines.append("\n<b>By exit reason</b>")
+            for reason, stats in sorted(result["by_reason"].items(), key=lambda kv: -kv[1]["count"]):
+                lines.append(f"{reason}: {stats['count']} trades, {stats['total_pnl_sol']:+.5f} SOL")
+
+        lines.append("\n<b>Suggestions</b>")
+        for s in result["suggestions"]:
+            lines.append(f"• {s}")
+
+        self._notifier.send("\n".join(lines))
 
     def _cmd_export(self) -> None:
         rows = self._trade_log.load_all()

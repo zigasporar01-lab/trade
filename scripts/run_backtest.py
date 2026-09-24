@@ -58,12 +58,17 @@ def main() -> None:
     try:
         for symbol, pool in zip(symbols, args.pool):
             print(f"Fetching ~{args.months:.1f} months of {aggregate_hours}h candles for {symbol} ({pool})...")
-            candles = client.get_ohlcv_history(
-                network=args.network,
-                pool_address=pool,
-                aggregate_hours=aggregate_hours,
-                total_candles=candles_needed,
-            )
+            try:
+                candles = client.get_ohlcv_history(
+                    network=args.network,
+                    pool_address=pool,
+                    aggregate_hours=aggregate_hours,
+                    total_candles=candles_needed,
+                )
+            except Exception as exc:  # noqa: BLE001 - one bad pool address must not abort every other symbol
+                print(f"  failed to fetch data for {symbol}: {exc}")
+                print(f"  skipping {symbol} — double-check the pool address and --network")
+                continue
             print(f"  got {len(candles)} candles")
             if len(candles) < 30:
                 print(f"  skipping {symbol}: not enough history for a meaningful backtest")

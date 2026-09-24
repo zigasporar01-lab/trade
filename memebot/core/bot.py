@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 
 import structlog
 
+from memebot.backtest.engine import run_backtest
 from memebot.config import REPO_ROOT, Settings
 from memebot.data.dexscreener import DexScreenerClient
 from memebot.data.geckoterminal import GeckoTerminalClient
@@ -35,6 +36,15 @@ from memebot.utils.telegram_notifier import TelegramNotifier
 log = structlog.get_logger(__name__)
 
 GECKOTERMINAL_NETWORK = {"solana": "solana"}
+
+
+def _format_self_backtest(summary: dict | None) -> str:
+    if summary is None:
+        return "not enough history on this token yet to self-backtest"
+    if summary["total_trades"] == 0:
+        return "0 prior occurrences of this setup in its recent history (first time firing)"
+    win_rate = f"{summary['win_rate'] * 100:.0f}%" if summary["win_rate"] is not None else "n/a"
+    return f"{summary['total_trades']} prior trade(s), {win_rate} win rate, {summary['total_pnl_sol']:+.5f} SOL"
 
 
 class MemeBot:
@@ -138,6 +148,33 @@ class MemeBot:
             log.info("bot.no_signal", token=market.token_address, symbol=market.symbol, reasons=signal.reasons)
             return
 
+        # Self-backtest: how has this exact strategy performed on this exact
+        # token's own recent history? Reuses the candles already fetched for
+        # the live signal — zero extra API calls. Excludes the current
+        # (still-open, no exit yet) signal candle so it only counts genuinely
+        # completed historical trades, not the entry we're about to make.
+        # Same caveats as any backtest apply: this reflects the technical
+        # strategy only, not the safety gate, and a short window often
+        # legitimately shows zero prior occurrences — that's informative on
+        # its own, not a failure.
+        self_backtest_summary = None
+        history_candles = candles[:-1]
+        if len(history_candles) >= 30:
+            try:
+                bt_result = run_backtest(
+                    history_candles, market.symbol, self.settings.strategy, self.settings.exits, self.settings.trading
+                )
+                self_backtest_summary = bt_result.summary
+            except Exception as exc:  # noqa: BLE001 - context only, must never block a live entry
+                log.warning("bot.self_backtest_failed", token=market.token_address, error=str(exc))
+
+        log.info(
+            "bot.signal_context",
+            token=market.token_address,
+            symbol=market.symbol,
+            self_backtest=self_backtest_summary,
+        )
+
         can_open, reason = self.risk_manager.can_open_new_position(self.portfolio.open_count)
         if not can_open:
             log.info("bot.entry_blocked_by_risk_manager", token=market.token_address, reason=reason)
@@ -180,7 +217,8 @@ class MemeBot:
             f"Entry: ${entry_price:.8f}\n"
             f"Size: {sizing.size_sol:.5f} SOL\n"
             f"Stop: ${signal.stop_loss:.8f}  Target: ${signal.take_profit:.8f}\n"
-            f"Token: <code>{market.token_address}</code>"
+            f"Token: <code>{market.token_address}</code>\n"
+            f"📈 Self-backtest (this token's own history): {_format_self_backtest(self_backtest_summary)}"
         )
 
     # ------------------------------------------------------------------

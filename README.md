@@ -284,7 +284,7 @@ delimiter issue that affects the raw CSV.
 pytest tests/ -v
 ```
 
-All 59 tests run offline against mock data — they validate the safety
+All 62 tests run offline against mock data — they validate the safety
 scoring, position sizing, risk circuit breakers, and indicator math, not
 live API behavior.
 
@@ -317,6 +317,30 @@ results as an **upper bound** on real performance, not a prediction of it.
 Pick established, liquid tokens with long price history for anything
 resembling a meaningful sample size — a token that launched last week
 won't give the strategy enough data to test.
+
+### Automatic self-backtest on every live signal
+
+You don't need to run this manually for every token the live bot considers
+— it already does it for you. Whenever the strategy fires a real entry
+signal, the bot also backtests that exact setup against that exact token's
+own recent candle history (reusing the candles it already fetched — no
+extra API calls) and includes the result in the `🟢 Opened ...` Telegram
+notification and the `bot.signal_context` log line, e.g.:
+
+```
+📈 Self-backtest (this token's own history): 3 prior trade(s), 67% win rate, +0.01230 SOL
+```
+
+or, very commonly for younger tokens that don't have much history yet:
+
+```
+📈 Self-backtest (this token's own history): 0 prior occurrences of this setup in its recent history (first time firing)
+```
+
+Zero prior occurrences isn't an error — a short window frequently just
+hasn't seen this exact setup before, and that's informative on its own,
+not something to be alarmed by. The same caveats as manual backtesting
+apply: this checks the technical strategy only, never the safety gate.
 
 ## Known limitations / what to improve before trusting this with real money
 

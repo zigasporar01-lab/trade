@@ -11,3 +11,4 @@ solana>=0.34
 base58>=2.1
 
 pytest>=8.0
+openpyxl>=3.1

@@ -245,7 +245,29 @@ memebot/
 tests/                   unit tests for every pure-logic module (no network calls)
 main.py                  entry point
 data/                    generated at runtime: trade_log_paper.csv / trade_log_live.csv (not tracked in git)
+scripts/format_trade_log.py   turns the CSV into a formatted, color-coded .xlsx
 ```
+
+## Viewing the trade log in Excel
+
+Opening `data/trade_log_paper.csv` directly sometimes renders as one messy
+column with no formatting — a regional-settings quirk (Excel expecting `;`
+instead of `,` as the list separator on some Windows locales), not a
+problem with the file itself.
+
+Instead, generate a proper formatted workbook:
+
+```bash
+python scripts/format_trade_log.py
+```
+
+This creates `data/trade_log_paper.xlsx` with a color-coded **Trades**
+sheet (green rows for wins, red for losses, proper number/date formatting,
+frozen header) and a **Summary** sheet with live formulas (total trades,
+win rate, total/best/worst PnL) that recalculate automatically. Safe to
+re-run anytime — it always rebuilds fresh from the current CSV. Double-click
+the `.xlsx` to open it; it isn't a plain-text format, so it doesn't hit the
+delimiter issue that affects the raw CSV.
 
 ## Testing
 

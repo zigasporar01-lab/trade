@@ -91,18 +91,29 @@ class SafetyScreener:
         merged = merge_reports(rugcheck_fields(rc_raw), goplus_fields(gp_raw), token_address)
         onchain_result = evaluate_onchain_safety(merged, self.settings.safety)
 
-        try:
-            mentions = self.twitter.search_token_mentions(
-                symbol=symbol,
-                token_address=token_address,
-                max_reads=self.settings.social.max_reads_per_token_scan,
+        if onchain_result.verdict != Verdict.SAFE:
+            # A candidate only ever passes when onchain == SAFE (see ScanRecord.passed
+            # below), so once on-chain fails, no social result can change the
+            # outcome — skip the paid X search entirely rather than burn X API
+            # credits on a check whose answer literally cannot matter.
+            social_result = SocialResult(
+                verdict=Verdict.WARN,
+                reasons=["Skipped social check: on-chain safety already failed, so this candidate is rejected regardless."],
+                report=None,
             )
-        except Exception as exc:  # noqa: BLE001
-            log.warning("screener.twitter_failed", token=token_address, error=str(exc))
-            mentions = []
+        else:
+            try:
+                mentions = self.twitter.search_token_mentions(
+                    symbol=symbol,
+                    token_address=token_address,
+                    max_reads=self.settings.social.max_reads_per_token_scan,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("screener.twitter_failed", token=token_address, error=str(exc))
+                mentions = []
 
-        social_report = build_social_report(token_address, mentions, self.settings.social)
-        social_result = evaluate_social_safety(social_report, self.settings.social)
+            social_report = build_social_report(token_address, mentions, self.settings.social)
+            social_result = evaluate_social_safety(social_report, self.settings.social)
 
         record = ScanRecord(timestamp=datetime.utcnow(), onchain=onchain_result, social=social_result)
         history = self._history.setdefault(token_address, CandidateHistory(token_address))

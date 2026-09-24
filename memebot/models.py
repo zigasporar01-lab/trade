@@ -134,6 +134,10 @@ class Position:
     close_price: float | None = None
     closed_at: datetime | None = None
     close_reason: str | None = None
+    partial_exit_done: bool = False
+    # SOL profit already locked in from a partial exit, on top of whatever
+    # the remaining (reduced) size_sol/size_tokens eventually closes for.
+    realized_partial_pnl_sol: float = 0.0
 
     @property
     def pnl_pct(self) -> float | None:
@@ -146,4 +150,4 @@ class Position:
         pnl_pct = self.pnl_pct
         if pnl_pct is None:
             return None
-        return self.size_sol * pnl_pct
+        return self.size_sol * pnl_pct + self.realized_partial_pnl_sol

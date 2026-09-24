@@ -74,6 +74,10 @@ class StrategyConfig(BaseModel):
     bb_std_dev: float = 2.0
     atr_period: int = 14
     min_breakout_volume_multiplier: float = 1.5
+    require_higher_tf_confirmation: bool = True
+    higher_tf_aggregate_hours: int = 24
+    higher_tf_ema_fast: int = 9
+    higher_tf_ema_slow: int = 21
 
 
 class ExitsConfig(BaseModel):
@@ -81,6 +85,8 @@ class ExitsConfig(BaseModel):
     take_profit_risk_reward: float = 2.5
     max_hold_hours: int = 8
     trailing_stop_activate_rr: float = 1.5
+    partial_exit_enabled: bool = True
+    partial_exit_pct: float = 0.5
 
 
 class LoopConfig(BaseModel):

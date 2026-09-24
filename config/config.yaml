@@ -75,6 +75,10 @@ strategy:
   bb_std_dev: 2.0
   atr_period: 14
   min_breakout_volume_multiplier: 1.5   # breakout candle volume vs 20-candle average
+  require_higher_tf_confirmation: true  # don't buy a 4h breakout that fights the daily trend
+  higher_tf_aggregate_hours: 24         # daily candles for the higher-timeframe check
+  higher_tf_ema_fast: 9
+  higher_tf_ema_slow: 21
 
 # ---------------------------------------------------------------------------
 # Exit rules.
@@ -84,6 +88,8 @@ exits:
   take_profit_risk_reward: 2.5
   max_hold_hours: 8               # force exit if neither SL nor TP hit within ~2x the signal timeframe
   trailing_stop_activate_rr: 1.5  # once trade is up 1.5R, trail the stop
+  partial_exit_enabled: true      # sell part of the position at the trailing-stop trigger to lock in profit
+  partial_exit_pct: 0.5           # fraction of the position sold at that point (0.5 = half)
 
 # ---------------------------------------------------------------------------
 # Loop timing.

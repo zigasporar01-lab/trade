@@ -46,6 +46,7 @@ class TelegramCommandListener:
         settings,
         dexscreener,
         trade_log,
+        state_store=None,
     ) -> None:
         self._bot_token = bot_token
         self._chat_id = str(chat_id) if chat_id else None
@@ -55,6 +56,7 @@ class TelegramCommandListener:
         self._settings = settings
         self._dexscreener = dexscreener
         self._trade_log = trade_log
+        self._state_store = state_store
         self._client = httpx.Client(timeout=POLL_TIMEOUT_SECONDS + 10)
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -252,8 +254,17 @@ class TelegramCommandListener:
         wb.save(output_path)
         self._notifier.send_document(output_path, caption=f"Trade log export — {len(rows)} closed trade(s)")
 
+    def _save_state(self) -> None:
+        if self._state_store is None:
+            return
+        try:
+            self._state_store.save(list(self._portfolio.open_positions.values()), self._risk_manager.state)
+        except Exception as exc:  # noqa: BLE001 - a failed state save must never break a command reply
+            log.warning("telegram.state_save_failed", error=str(exc))
+
     def _cmd_pause(self) -> None:
         self._risk_manager.pause_manually()
+        self._save_state()
         self._notifier.send(
             "⏸ Trading paused. Open positions are still monitored and can still "
             "hit their stop/target. Send /resume to re-enable new entries."
@@ -261,4 +272,5 @@ class TelegramCommandListener:
 
     def _cmd_resume(self) -> None:
         self._risk_manager.resume_manually()
+        self._save_state()
         self._notifier.send("▶️ Trading resumed. New candidates can be entered again.")

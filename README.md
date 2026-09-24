@@ -247,7 +247,7 @@ memebot/
   backtest/              strategy backtester (reuses the live signal/exit logic)
 tests/                   unit tests for every pure-logic module (no network calls)
 main.py                  entry point
-data/                    generated at runtime: trade logs, backtest reports (not tracked in git)
+data/                    generated at runtime: trade logs, state_<mode>.json, backtest reports (not tracked in git)
 scripts/
   format_trade_log.py    turns the trade log CSV into a formatted, color-coded .xlsx
   run_backtest.py        backtests the strategy against real historical price data
@@ -278,13 +278,32 @@ re-run anytime — it always rebuilds fresh from the current CSV. Double-click
 the `.xlsx` to open it; it isn't a plain-text format, so it doesn't hit the
 delimiter issue that affects the raw CSV.
 
+## Surviving a restart
+
+Your laptop sleeping, a crash, or a manual stop no longer means the bot
+loses track of what it was doing. Every open position and the risk
+manager's state (daily loss, consecutive-loss cooldown, manual pause) are
+saved to `data/state_<mode>.json` whenever a position opens or closes, or
+whenever you send `/pause` or `/resume` — and restored automatically the
+next time you run `python main.py`.
+
+If it restores anything, you'll see it immediately:
+- In the terminal: `bot.state_restored` with the count and symbols.
+- On Telegram: the startup message gets an extra line, `🔄 Restored N open
+  position(s) from a previous session.`
+
+This file is local-only (not tracked in git, like the trade log) and
+written atomically, so a crash mid-save can't corrupt it — worst case, you
+lose whatever changed since the last successful save, never a half-written
+file.
+
 ## Testing
 
 ```bash
 pytest tests/ -v
 ```
 
-All 62 tests run offline against mock data — they validate the safety
+All 71 tests run offline against mock data — they validate the safety
 scoring, position sizing, risk circuit breakers, and indicator math, not
 live API behavior.
 
@@ -348,12 +367,12 @@ apply: this checks the technical strategy only, never the safety gate.
   free API has no dedicated new-pairs feed. For serious use, replace
   `DexScreenerClient.get_new_pairs` with a Helius webhook or a direct
   pump.fun/Raydium program-log listener for real-time new-pool detection.
-- **Partial persistence**: closed-trade history is saved permanently to
-  `data/trade_log_<mode>.csv` (readable in Excel/Sheets, and what `/pnl`
-  reports from). *Open* positions and the risk manager's daily-loss/
-  loss-streak counters are still in-memory only and reset if the process
-  restarts — add a database or JSON snapshot for those before running live
-  unattended for long periods.
+- ~~Partial persistence~~ **Resolved**: closed-trade history is saved to
+  `data/trade_log_<mode>.csv`, and open positions plus the risk manager's
+  daily-loss/loss-streak/manual-pause state are now saved to
+  `data/state_<mode>.json` on every position open/close and every
+  `/pause`/`/resume`, and restored automatically on the next startup — see
+  "Surviving a restart" below.
 - **X sentiment is keyword-based**, not a real NLP model — it catches
   obvious cases ("rug", "scam", "honeypot") but will miss subtler signals.
 - **RugCheck's raw risk-score threshold** (`safety.max_rugcheck_risk_score`)

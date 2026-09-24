@@ -29,6 +29,7 @@ from memebot.risk.risk_manager import RiskManager
 from memebot.safety.screener import SafetyScreener
 from memebot.strategy.signals import generate_entry_signal
 from memebot.core.portfolio import Portfolio
+from memebot.core.state_store import StateStore
 from memebot.core.trade_log import TradeLog
 from memebot.utils.telegram_commands import TelegramCommandListener
 from memebot.utils.telegram_notifier import TelegramNotifier
@@ -57,8 +58,22 @@ class MemeBot:
         self.broker: Broker = LiveBroker(settings, self.jupiter) if settings.is_live else PaperBroker(self.jupiter)
         self.portfolio = Portfolio()
         self.risk_manager = RiskManager(settings.trading, settings.trading.capital_sol)
-        # Separate log per mode so paper-testing history never mixes with real trades.
+        # Separate log/state per mode so paper-testing history never mixes with real trades.
         self.trade_log = TradeLog(REPO_ROOT / "data" / f"trade_log_{settings.mode_normalized}.csv")
+        self.state_store = StateStore(REPO_ROOT / "data" / f"state_{settings.mode_normalized}.json")
+
+        restored_positions, restored_risk_state = self.state_store.load()
+        for p in restored_positions:
+            self.portfolio.open_positions[p.token_address] = p
+        if restored_risk_state:
+            self.risk_manager.state = restored_risk_state
+        self.restored_position_count = len(restored_positions)
+        if restored_positions:
+            log.warning(
+                "bot.state_restored",
+                open_positions=len(restored_positions),
+                symbols=[p.symbol for p in restored_positions],
+            )
         self.notifier = TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id)
         self.command_listener = TelegramCommandListener(
             bot_token=settings.telegram_bot_token,
@@ -69,6 +84,7 @@ class MemeBot:
             settings=self.settings,
             dexscreener=self.dexscreener,
             trade_log=self.trade_log,
+            state_store=self.state_store,
         )
 
         log.info(
@@ -77,6 +93,12 @@ class MemeBot:
             chain=settings.trading.chain,
             capital_sol=settings.trading.capital_sol,
         )
+
+    def _save_state(self) -> None:
+        try:
+            self.state_store.save(list(self.portfolio.open_positions.values()), self.risk_manager.state)
+        except Exception as exc:  # noqa: BLE001 - a failed state save must never block trading
+            log.warning("bot.state_save_failed", error=str(exc))
 
     # ------------------------------------------------------------------
     # Discovery + safety + signal + entry
@@ -212,6 +234,7 @@ class MemeBot:
             high_water_mark=entry_price,
         )
         self.portfolio.open_position(position)
+        self._save_state()
         self.notifier.send(
             f"🟢 <b>Opened {position.symbol}</b> ({'LIVE' if self.settings.is_live else 'paper'})\n"
             f"Entry: ${entry_price:.8f}\n"
@@ -274,6 +297,7 @@ class MemeBot:
 
                     was_paused_before = self.risk_manager.state.paused_until
                     self.risk_manager.record_trade_closed(closed.pnl_sol or 0.0)
+                    self._save_state()
 
                     pnl_sol = closed.pnl_sol or 0.0
                     emoji = "✅" if pnl_sol >= 0 else "🔻"
@@ -302,9 +326,15 @@ class MemeBot:
             mode=self.settings.trading.mode,
             warning="LIVE TRADING" if self.settings.is_live else "paper trading (no funds at risk)",
         )
+        restored_line = (
+            f"\n🔄 Restored {self.restored_position_count} open position(s) from a previous session."
+            if self.restored_position_count
+            else ""
+        )
         self.notifier.send(
             f"🤖 Memebot started — {'⚠️ LIVE TRADING' if self.settings.is_live else 'paper mode (no funds at risk)'}\n"
-            f"Capital: {self.settings.trading.capital_sol} SOL\n"
+            f"Capital: {self.settings.trading.capital_sol} SOL"
+            f"{restored_line}\n"
             f"Send /help to see available commands."
         )
         self.command_listener.start()

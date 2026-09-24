@@ -13,7 +13,19 @@ from memebot.models import Candle, Signal
 from memebot.strategy.indicators import atr, bollinger_bands, ema, rsi, volume_multiplier
 
 
-def generate_entry_signal(candles: list[Candle], strategy_cfg: StrategyConfig, exits_cfg: ExitsConfig) -> Signal:
+def generate_entry_signal(
+    candles: list[Candle],
+    strategy_cfg: StrategyConfig,
+    exits_cfg: ExitsConfig,
+    higher_tf_candles: list[Candle] | None = None,
+) -> Signal:
+    """higher_tf_candles (e.g. daily candles): an optional additional trend
+    filter — don't buy a 4h breakout that's fighting the higher-timeframe
+    trend. Only checked when the caller supplies this data AND
+    strategy_cfg.require_higher_tf_confirmation is on; callers that don't
+    have this data (the backtester, the self-backtest-on-signal check) are
+    unaffected, since they only ever test the core 4h logic.
+    """
     min_history = max(strategy_cfg.ema_slow, strategy_cfg.rsi_period, strategy_cfg.bb_period, strategy_cfg.atr_period) + 5
     if len(candles) < min_history:
         return Signal(should_enter=False, reasons=[f"Not enough candle history (have {len(candles)}, need {min_history})."])
@@ -71,6 +83,27 @@ def generate_entry_signal(candles: list[Candle], strategy_cfg: StrategyConfig, e
     if atr_vals[i] is None:
         ok = False
         reasons.append("ATR not available to size a stop-loss.")
+
+    if strategy_cfg.require_higher_tf_confirmation and higher_tf_candles is not None:
+        higher_closes = [c.close for c in higher_tf_candles]
+        min_higher_history = strategy_cfg.higher_tf_ema_slow
+        if len(higher_closes) < min_higher_history:
+            ok = False
+            reasons.append(
+                f"Not enough higher-timeframe history to confirm the broader trend "
+                f"(have {len(higher_closes)}, need {min_higher_history})."
+            )
+        else:
+            h_fast = ema(higher_closes, strategy_cfg.higher_tf_ema_fast)[-1]
+            h_slow = ema(higher_closes, strategy_cfg.higher_tf_ema_slow)[-1]
+            if h_fast is None or h_slow is None:
+                ok = False
+                reasons.append("Higher-timeframe EMA not ready yet.")
+            elif h_fast > h_slow:
+                reasons.append("Higher-timeframe trend confirms (not fighting the broader trend).")
+            else:
+                ok = False
+                reasons.append("Higher-timeframe trend is down — skipping to avoid fighting the broader trend.")
 
     if not ok:
         return Signal(should_enter=False, reasons=reasons)

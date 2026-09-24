@@ -243,11 +243,14 @@ memebot/
   strategy/              indicators (EMA/RSI/Bollinger/ATR) + 4h entry signal
   risk/                  position sizing (1% rule) + circuit breakers
   execution/             paper broker, Jupiter client, live broker
-  core/                  bot loop, portfolio tracking, persistent trade log
+  core/                  bot loop, portfolio tracking, persistent trade log, xlsx export
+  backtest/              strategy backtester (reuses the live signal/exit logic)
 tests/                   unit tests for every pure-logic module (no network calls)
 main.py                  entry point
-data/                    generated at runtime: trade_log_paper.csv / trade_log_live.csv (not tracked in git)
-scripts/format_trade_log.py   turns the CSV into a formatted, color-coded .xlsx
+data/                    generated at runtime: trade logs, backtest reports (not tracked in git)
+scripts/
+  format_trade_log.py    turns the trade log CSV into a formatted, color-coded .xlsx
+  run_backtest.py        backtests the strategy against real historical price data
 ```
 
 ## Viewing the trade log in Excel
@@ -281,9 +284,39 @@ delimiter issue that affects the raw CSV.
 pytest tests/ -v
 ```
 
-All 45 tests run offline against mock data — they validate the safety
+All 59 tests run offline against mock data — they validate the safety
 scoring, position sizing, risk circuit breakers, and indicator math, not
 live API behavior.
+
+## Backtesting the strategy
+
+Paper trading tells you how the bot behaves going forward, but takes weeks
+to accumulate enough trades to mean anything. This tests the **technical
+strategy only** (trend/breakout/RSI signal, ATR stop, R:R target, trailing
+stop, time exit) against real historical price data, in minutes:
+
+```bash
+python scripts/run_backtest.py --pool <geckoterminal-pool-address> --symbol BONK --months 3
+```
+
+Find a pool address by opening the token on dexscreener.com — the address
+in the URL right after the chain name (`dexscreener.com/solana/<THIS>`) is
+the same address GeckoTerminal uses. You can pass `--pool` multiple times
+to test several tokens in one run. It writes a color-coded `.xlsx` report
+to `data/backtest_report.xlsx` (same style as the trade log) with a
+per-trade breakdown and per-symbol summary stats.
+
+**Read this before trusting the numbers**: a backtest here can only ever
+validate the technical entry/exit logic — it **cannot** validate the
+rug-pull safety gate, because RugCheck and GoPlus only expose a token's
+*current* state, not a historical snapshot of whether liquidity was locked
+three months ago. It's also only testing tokens that still exist and are
+still indexed today — ones that rugged and vanished aren't in this data,
+which flatters any strategy tested this way (survivorship bias). Treat
+results as an **upper bound** on real performance, not a prediction of it.
+Pick established, liquid tokens with long price history for anything
+resembling a meaningful sample size — a token that launched last week
+won't give the strategy enough data to test.
 
 ## Known limitations / what to improve before trusting this with real money
 

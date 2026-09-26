@@ -58,7 +58,8 @@ class SocialConfig(BaseModel):
     min_account_age_days: int = 14
     max_negative_sentiment_ratio: float = 0.6
     cache_ttl_minutes: int = 20
-    max_reads_per_token_scan: int = 25
+    max_reads_per_token_scan: int = 10
+    daily_x_budget_usd: float | None = 2.0
 
 
 class StrategyConfig(BaseModel):

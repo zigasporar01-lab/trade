@@ -11,7 +11,8 @@ from memebot.safety import screener as screener_module
 from memebot.safety.screener import SafetyScreener
 
 
-def make_screener(monkeypatch, onchain_verdict):
+def make_screener(monkeypatch, tmp_path, onchain_verdict):
+    monkeypatch.setattr(screener_module, "REPO_ROOT", tmp_path)
     screener = SafetyScreener(Settings())
     screener.rugcheck = MagicMock()
     screener.rugcheck.get_report.return_value = None
@@ -28,8 +29,8 @@ def make_screener(monkeypatch, onchain_verdict):
     return screener
 
 
-def test_skips_paid_social_check_when_onchain_is_danger(monkeypatch):
-    screener = make_screener(monkeypatch, Verdict.DANGER)
+def test_skips_paid_social_check_when_onchain_is_danger(monkeypatch, tmp_path):
+    screener = make_screener(monkeypatch, tmp_path, Verdict.DANGER)
     record = screener.scan("TOKEN", "SYM")
 
     screener.twitter.search_token_mentions.assert_not_called()
@@ -38,15 +39,15 @@ def test_skips_paid_social_check_when_onchain_is_danger(monkeypatch):
     assert not record.passed
 
 
-def test_skips_paid_social_check_when_onchain_is_warn(monkeypatch):
-    screener = make_screener(monkeypatch, Verdict.WARN)
+def test_skips_paid_social_check_when_onchain_is_warn(monkeypatch, tmp_path):
+    screener = make_screener(monkeypatch, tmp_path, Verdict.WARN)
     screener.scan("TOKEN", "SYM")
 
     screener.twitter.search_token_mentions.assert_not_called()
 
 
-def test_runs_paid_social_check_only_when_onchain_is_safe(monkeypatch):
-    screener = make_screener(monkeypatch, Verdict.SAFE)
+def test_runs_paid_social_check_only_when_onchain_is_safe(monkeypatch, tmp_path):
+    screener = make_screener(monkeypatch, tmp_path, Verdict.SAFE)
     screener.scan("TOKEN", "SYM")
 
     screener.twitter.search_token_mentions.assert_called_once()

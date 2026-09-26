@@ -57,7 +57,8 @@ social:
   min_account_age_days: 14
   max_negative_sentiment_ratio: 0.6
   cache_ttl_minutes: 20           # X reads cost money — cache aggressively
-  max_reads_per_token_scan: 25
+  max_reads_per_token_scan: 10    # lower = cheaper per scan, smaller sample of tweets to judge from
+  daily_x_budget_usd: 2.0         # hard stop: pause paid X checks once ~this much is estimated spent in a day (null disables)
 
 # ---------------------------------------------------------------------------
 # Strategy — 4h timeframe technical signal.

@@ -20,6 +20,7 @@ import httpx
 import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from memebot.core.spend_tracker import SpendTracker
 from memebot.models import SocialMention
 
 log = structlog.get_logger(__name__)
@@ -33,11 +34,15 @@ class TwitterClient:
         bearer_token: str | None,
         client: httpx.Client | None = None,
         cache_ttl_seconds: int = 1200,
+        spend_tracker: SpendTracker | None = None,
+        daily_budget_usd: float | None = None,
     ) -> None:
         self._bearer_token = bearer_token
         self._client = client or httpx.Client(base_url=BASE_URL, timeout=10.0)
         self._cache_ttl = cache_ttl_seconds
         self._cache: dict[str, tuple[float, list[SocialMention]]] = {}
+        self._spend_tracker = spend_tracker
+        self._daily_budget_usd = daily_budget_usd
 
     @property
     def configured(self) -> bool:
@@ -75,6 +80,19 @@ class TwitterClient:
         if cached and (time.time() - cached[0]) < self._cache_ttl:
             return cached[1]
 
+        if self._spend_tracker and self._spend_tracker.budget_exceeded(self._daily_budget_usd):
+            # Treated as "no mentions found," not "safe" — the same fail-closed
+            # rule as any other missing-data case (see safety/social.py): an
+            # empty result naturally fails min_mentions_24h rather than
+            # defaulting to a favorable verdict.
+            log.warning(
+                "twitter.daily_budget_exceeded",
+                spent_usd=round(self._spend_tracker.spent_today(), 4),
+                budget_usd=self._daily_budget_usd,
+                token=token_address,
+            )
+            return []
+
         query = f'("${symbol}" OR "{token_address}") -is:retweet lang:en'
         data = self._search_recent(query, max_results=max_reads)
 
@@ -101,6 +119,8 @@ class TwitterClient:
             )
 
         self._cache[cache_key] = (time.time(), mentions)
+        if self._spend_tracker:
+            self._spend_tracker.record_reads(post_count=len(data.get("data", [])), profile_count=len(users_by_id))
         return mentions
 
     def close(self) -> None:

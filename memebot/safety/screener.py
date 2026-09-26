@@ -16,7 +16,8 @@ from datetime import datetime
 
 import structlog
 
-from memebot.config import Settings
+from memebot.config import REPO_ROOT, Settings
+from memebot.core.spend_tracker import SpendTracker
 from memebot.data.dexscreener import DexScreenerClient
 from memebot.data.goplus import GoPlusClient
 from memebot.data.goplus import extract_safety_fields as goplus_fields
@@ -64,9 +65,12 @@ class SafetyScreener:
         self.dexscreener = DexScreenerClient()
         self.rugcheck = RugCheckClient(api_key=settings.rugcheck_api_key)
         self.goplus = GoPlusClient(api_key=settings.goplus_api_key)
+        self.spend_tracker = SpendTracker(REPO_ROOT / "data" / f"x_spend_{settings.mode_normalized}.json")
         self.twitter = TwitterClient(
             bearer_token=settings.x_bearer_token,
             cache_ttl_seconds=settings.social.cache_ttl_minutes * 60,
+            spend_tracker=self.spend_tracker,
+            daily_budget_usd=settings.social.daily_x_budget_usd,
         )
         self._history: dict[str, CandidateHistory] = {}
 

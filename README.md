@@ -257,6 +257,29 @@ closes), not two separate rows — `/pnl` and the Excel export both already
 show the true combined result without any extra work. Set
 `exits.partial_exit_enabled: false` to go back to all-or-nothing exits.
 
+### Controlling X API spend
+
+X charges per item read (~$0.005/tweet + $0.010/profile), not a flat fee
+per search — so checking a genuinely buzzing token (lots of tweets) costs
+more than checking a quiet one, even though it's the same "one scan." Two
+knobs control this:
+
+- `social.max_reads_per_token_scan` (default 10) — the max tweets pulled
+  per scan. Lower = cheaper per scan, but a smaller sample to judge
+  sentiment/authenticity from.
+- `social.daily_x_budget_usd` (default $2.00) — a hard stop. Once the
+  bot's own estimate of today's X spend reaches this, it stops making paid
+  X calls for the rest of the day (a candidate that hits this just gets
+  treated as "no social data," which safely fails the social check rather
+  than defaulting to "safe" — same fail-closed rule as everything else in
+  the safety layer). Set to `null` to disable the cap entirely.
+
+This is an *estimate* tracked locally (`data/x_spend_<mode>.json`, resets
+each UTC day) from the documented per-item rates — it won't perfectly
+match your actual X bill, but it exists specifically so you can't get
+blindsided by your balance dropping faster than expected. Watch for a
+`twitter.daily_budget_exceeded` line in your log if it kicks in.
+
 ## Project layout
 
 ```
@@ -345,7 +368,7 @@ file.
 pytest tests/ -v
 ```
 
-All 106 tests run offline against mock data — they validate the safety
+All 119 tests run offline against mock data — they validate the safety
 scoring, position sizing, risk circuit breakers, and indicator math, not
 live API behavior.
 
